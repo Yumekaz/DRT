@@ -15,17 +15,21 @@ In REPLAY mode:
 """
 
 import threading
-from typing import Dict, Set, Optional, List, Callable, Any
+from typing import Dict, Set, Optional, List, Callable
 from enum import Enum, auto
 from dataclasses import dataclass, field
 
 from .events import (
     LogEntry, EventType,
-    serialize_mutex_payload, deserialize_mutex_payload,
-    serialize_cond_payload, deserialize_cond_payload,
-    serialize_cond_wake_payload, serialize_thread_create_payload,
-    deserialize_cond_wake_payload, deserialize_thread_create_payload,
-    serialize_thread_join_payload, deserialize_thread_join_payload,
+    deserialize_cond_wake_payload,
+    deserialize_thread_create_payload,
+    deserialize_thread_join_payload,
+    serialize_cond_payload,
+    serialize_cond_wake_payload,
+    serialize_lock_acquire_payload,
+    serialize_mutex_payload,
+    serialize_thread_create_payload,
+    serialize_thread_join_payload,
 )
 from .log import EventLog
 from .exceptions import (
@@ -67,6 +71,7 @@ class ManagedThread:
     blocked_on_mutex: Optional[int] = None
     blocked_on_cond: Optional[int] = None
     waiting_for_thread: Optional[int] = None
+    completed_join_target: Optional[int] = None
     exception: Optional[BaseException] = None
     
     def __hash__(self):
@@ -96,6 +101,7 @@ class Scheduler:
         self._threads: Dict[int, ManagedThread] = {}
         self._next_thread_id = 0
         self._current_thread_id: Optional[int] = None
+        self._next_sync_id = 0
         
         # Synchronization state
         self._mutex_owners: Dict[int, int] = {}  # mutex_id -> thread_id
@@ -241,6 +247,19 @@ class Scheduler:
                 if tid not in exclude and thread.native_thread is not None
             ]
 
+    def allocate_sync_id(self) -> int:
+        """Allocate a per-runtime synchronization primitive ID."""
+        with self._lock:
+            sync_id = self._next_sync_id
+            self._next_sync_id += 1
+            return sync_id
+
+    def thread_has_exited(self, thread_id: int) -> bool:
+        """Check whether a managed thread has exited."""
+        with self._lock:
+            thread = self._threads.get(thread_id)
+            return thread is not None and thread.state == ThreadState.EXITED
+
     def ensure_deadlock_error(
         self, message: str = "No runnable managed threads remain"
     ) -> DeadlockError:
@@ -292,7 +311,11 @@ class Scheduler:
     def thread_exited(self, thread_id: int):
         """Called when a thread exits."""
         with self._lock:
-            if self.mode == RuntimeMode.REPLAY and self._fatal_exception is None:
+            if (
+                self.mode == RuntimeMode.REPLAY
+                and self._fatal_exception is None
+                and not self._shutdown_requested
+            ):
                 self._consume_replay_event_unlocked(EventType.THREAD_EXIT, thread_id)
 
             thread = self._threads.get(thread_id)
@@ -307,6 +330,7 @@ class Scheduler:
                 # Wake any threads waiting to join
                 for t in self._threads.values():
                     if t.waiting_for_thread == thread_id:
+                        t.completed_join_target = thread_id
                         t.waiting_for_thread = None
                         t.state = ThreadState.RUNNABLE
                         
@@ -500,6 +524,15 @@ class Scheduler:
             )
 
         actual = self._format_log_entry(entry)
+
+        if entry.logical_time != self._logical_time:
+            raise DivergenceError(
+                "Replay event appeared at an unexpected logical time",
+                self._logical_time,
+                f"{expected} at logical time {self._logical_time}",
+                f"{actual} at logical time {entry.logical_time}",
+            )
+
         if entry.event_type != expected_type:
             raise DivergenceError(
                 f"Expected next replay event to be {expected_type.name}",
@@ -532,6 +565,40 @@ class Scheduler:
     def _format_log_entry(self, entry: LogEntry) -> str:
         """Format a log entry for divergence diagnostics."""
         return f"{entry.event_type.name} by thread {entry.thread_id}"
+
+    def verify_replay_complete(self):
+        """Ensure replay consumed the final LOG_COMPLETE marker and nothing else."""
+        if self.mode != RuntimeMode.REPLAY:
+            return
+
+        with self._lock:
+            if self._replay_index >= len(self.log._entries):
+                raise DivergenceError(
+                    "Replay reached the end of the log without LOG_COMPLETE",
+                    self._logical_time,
+                    "LOG_COMPLETE",
+                    "end of log",
+                )
+
+            entry = self.log._entries[self._replay_index]
+            if entry.event_type != EventType.LOG_COMPLETE:
+                raise DivergenceError(
+                    "Replay finished before the recorded execution was exhausted",
+                    self._logical_time,
+                    "LOG_COMPLETE",
+                    self._format_log_entry(entry),
+                )
+
+            self._replay_index += 1
+
+            if self._replay_index != len(self.log._entries):
+                extra = self.log._entries[self._replay_index]
+                raise DivergenceError(
+                    "Replay log has trailing events after LOG_COMPLETE",
+                    self._logical_time,
+                    "end of log",
+                    self._format_log_entry(extra),
+                )
         
     def _log_event(self, event_type: EventType, payload: bytes, 
                    thread_id: Optional[int] = None):
@@ -575,41 +642,51 @@ class Scheduler:
             True if acquired, False if blocked
         """
         with self._lock:
+            owner = self._mutex_owners.get(mutex_id)
+            pending_owner = self._mutex_pending_owners.get(mutex_id)
+            if owner == thread_id:
+                raise SchedulerError(
+                    f"Reentrant mutex acquisition is not supported for mutex {mutex_id}"
+                )
+
+            acquired_immediately = (
+                owner is None and (
+                    pending_owner is None or pending_owner == thread_id
+                )
+            )
+
+            payload = serialize_lock_acquire_payload(
+                mutex_id,
+                blocking=True,
+                acquired_immediately=acquired_immediately,
+            )
+
             if self.mode == RuntimeMode.REPLAY:
                 entry = self._consume_replay_event_unlocked(
                     EventType.LOCK_ACQUIRE,
                     thread_id,
                 )
-                logged_mutex_id = deserialize_mutex_payload(entry.payload)
-                if logged_mutex_id != mutex_id:
+                if entry.payload != payload:
                     raise DivergenceError(
-                        "Replay mutex acquisition targeted the wrong mutex",
+                        "Replay mutex acquisition did not match the recorded call",
                         self._logical_time,
-                        f"LOCK_ACQUIRE mutex={mutex_id}",
-                        f"LOCK_ACQUIRE mutex={logged_mutex_id}",
+                        (
+                            f"LOCK_ACQUIRE mutex={mutex_id} blocking=True "
+                            f"immediate={acquired_immediately}"
+                        ),
+                        entry.payload.hex(),
                     )
             else:
-                self._log_event(
-                    EventType.LOCK_ACQUIRE,
-                    serialize_mutex_payload(mutex_id),
-                    thread_id
-                )
-                
-            owner = self._mutex_owners.get(mutex_id)
-            pending_owner = self._mutex_pending_owners.get(mutex_id)
-            
-            if owner is None and pending_owner is None:
+                self._log_event(EventType.LOCK_ACQUIRE, payload, thread_id)
+
+            if acquired_immediately and pending_owner is None:
                 # Mutex is free - acquire it
                 self._mutex_owners[mutex_id] = thread_id
                 return True
-            elif owner is None and pending_owner == thread_id:
+            elif acquired_immediately and pending_owner == thread_id:
                 del self._mutex_pending_owners[mutex_id]
                 self._mutex_owners[mutex_id] = thread_id
                 return True
-            elif owner == thread_id:
-                raise SchedulerError(
-                    f"Reentrant mutex acquisition is not supported for mutex {mutex_id}"
-                )
             else:
                 # Blocked - add to waiters
                 thread = self._threads[thread_id]
@@ -633,54 +710,46 @@ class Scheduler:
         with self._lock:
             owner = self._mutex_owners.get(mutex_id)
             pending_owner = self._mutex_pending_owners.get(mutex_id)
-            can_acquire = (
-                (owner is None and pending_owner is None)
-                or (owner is None and pending_owner == thread_id)
-            )
-
             if owner == thread_id:
                 raise SchedulerError(
                     f"Reentrant mutex acquisition is not supported for mutex {mutex_id}"
                 )
 
-            upcoming = self._peek_replay_event_unlocked() if self.mode == RuntimeMode.REPLAY else None
-            recorded_acquire = (
-                upcoming is not None
-                and upcoming.event_type == EventType.LOCK_ACQUIRE
-                and upcoming.thread_id == thread_id
-                and deserialize_mutex_payload(upcoming.payload) == mutex_id
+            acquired_immediately = (
+                (owner is None and pending_owner is None)
+                or (owner is None and pending_owner == thread_id)
             )
 
-            if can_acquire:
-                if self.mode == RuntimeMode.REPLAY:
-                    if not recorded_acquire:
-                        raise DivergenceError(
-                            "Replay mutex try_lock succeeded when the recording did not",
-                            self._logical_time,
-                            f"LOCK_ACQUIRE by thread {thread_id}",
-                            "no matching LOCK_ACQUIRE",
-                        )
-                    self._consume_replay_event_unlocked(EventType.LOCK_ACQUIRE, thread_id)
-                else:
-                    self._log_event(
-                        EventType.LOCK_ACQUIRE,
-                        serialize_mutex_payload(mutex_id),
-                        thread_id,
-                    )
+            payload = serialize_lock_acquire_payload(
+                mutex_id,
+                blocking=False,
+                acquired_immediately=acquired_immediately,
+            )
 
+            if self.mode == RuntimeMode.REPLAY:
+                entry = self._consume_replay_event_unlocked(
+                    EventType.LOCK_ACQUIRE,
+                    thread_id,
+                )
+                if entry.payload != payload:
+                    raise DivergenceError(
+                        "Replay mutex try_lock did not match the recorded call",
+                        self._logical_time,
+                        (
+                            f"LOCK_ACQUIRE mutex={mutex_id} blocking=False "
+                            f"immediate={acquired_immediately}"
+                        ),
+                        entry.payload.hex(),
+                    )
+            else:
+                self._log_event(EventType.LOCK_ACQUIRE, payload, thread_id)
+
+            if acquired_immediately:
                 if pending_owner == thread_id:
                     del self._mutex_pending_owners[mutex_id]
 
                 self._mutex_owners[mutex_id] = thread_id
                 return True
-
-            if self.mode == RuntimeMode.REPLAY and recorded_acquire:
-                raise DivergenceError(
-                    "Replay mutex try_lock failed even though the recording acquired it",
-                    self._logical_time,
-                    f"mutex {mutex_id} unavailable",
-                    f"mutex {mutex_id} available",
-                )
 
             return False
 
@@ -703,13 +772,13 @@ class Scheduler:
                     EventType.LOCK_RELEASE,
                     thread_id,
                 )
-                logged_mutex_id = deserialize_mutex_payload(entry.payload)
-                if logged_mutex_id != mutex_id:
+                expected_payload = serialize_mutex_payload(mutex_id)
+                if entry.payload != expected_payload:
                     raise DivergenceError(
                         "Replay mutex release targeted the wrong mutex",
                         self._logical_time,
                         f"LOCK_RELEASE mutex={mutex_id}",
-                        f"LOCK_RELEASE mutex={logged_mutex_id}",
+                        entry.payload.hex(),
                     )
             else:
                 self._log_event(
@@ -750,13 +819,13 @@ class Scheduler:
                     EventType.COND_WAIT,
                     thread_id,
                 )
-                logged_cond_id = deserialize_cond_payload(entry.payload)
-                if logged_cond_id != cond_id:
+                expected_payload = serialize_cond_payload(cond_id)
+                if entry.payload != expected_payload:
                     raise DivergenceError(
                         "Replay condition wait targeted the wrong condition",
                         self._logical_time,
                         f"COND_WAIT cond={cond_id}",
-                        f"COND_WAIT cond={logged_cond_id}",
+                        entry.payload.hex(),
                     )
             else:
                 self._log_event(
@@ -811,8 +880,17 @@ class Scheduler:
                                 "no waiter available",
                             )
                 return None
-                
+
             if self.mode == RuntimeMode.REPLAY:
+                upcoming = self._peek_replay_event_unlocked()
+                if upcoming is None or upcoming.event_type != EventType.COND_WAKE:
+                    raise DivergenceError(
+                        "Replay notify() found waiters but no recorded wake followed",
+                        self._logical_time,
+                        f"COND_WAKE by thread {thread_id}",
+                        "no matching COND_WAKE",
+                    )
+
                 entry = self._consume_replay_event_unlocked(
                     EventType.COND_WAKE,
                     thread_id,
@@ -881,27 +959,49 @@ class Scheduler:
             True if target already exited, False if must wait
         """
         with self._lock:
+            if thread_id == target_thread_id:
+                raise SchedulerError("Thread cannot join itself")
+
+            thread = self._threads[thread_id]
             target = self._threads.get(target_thread_id)
+            completed_from_wait = thread.completed_join_target == target_thread_id
+
             if target is None or target.state == ThreadState.EXITED:
+                expected_immediate = not completed_from_wait
+
                 if self.mode == RuntimeMode.REPLAY:
                     entry = self._consume_replay_event_unlocked(
                         EventType.THREAD_JOIN,
                         thread_id,
                     )
-                    logged_target_thread_id = deserialize_thread_join_payload(entry.payload)
+                    logged_target_thread_id, logged_immediate = (
+                        deserialize_thread_join_payload(entry.payload)
+                    )
                     if logged_target_thread_id != target_thread_id:
                         raise DivergenceError(
-                            "Replay join completed for the wrong target thread",
+                            "Replay join targeted the wrong thread",
                             self._logical_time,
                             f"THREAD_JOIN target={target_thread_id}",
                             f"THREAD_JOIN target={logged_target_thread_id}",
                         )
+                    if logged_immediate != expected_immediate:
+                        raise DivergenceError(
+                            "Replay join completion mode does not match runtime state",
+                            self._logical_time,
+                            f"THREAD_JOIN immediate={expected_immediate}",
+                            f"THREAD_JOIN immediate={logged_immediate}",
+                        )
                 else:
                     self._log_event(
                         EventType.THREAD_JOIN,
-                        serialize_thread_join_payload(target_thread_id),
+                        serialize_thread_join_payload(
+                            target_thread_id,
+                            expected_immediate,
+                        ),
                         thread_id,
                     )
+
+                thread.completed_join_target = None
                 return True
 
             if self.mode == RuntimeMode.REPLAY:
@@ -910,20 +1010,21 @@ class Scheduler:
                     upcoming is not None
                     and upcoming.event_type == EventType.THREAD_JOIN
                     and upcoming.thread_id == thread_id
-                    and deserialize_thread_join_payload(upcoming.payload) == target_thread_id
                 ):
-                    raise DivergenceError(
-                        "Replay join completed before the target thread exited",
-                        self._logical_time,
-                        f"thread {target_thread_id} still running",
-                        f"THREAD_JOIN target={target_thread_id}",
+                    logged_target_thread_id, _ = deserialize_thread_join_payload(
+                        upcoming.payload
                     )
-                 
-            # Block waiting for target
-            thread = self._threads[thread_id]
+                    if logged_target_thread_id == target_thread_id:
+                        raise DivergenceError(
+                            "Replay join completed before the target thread exited",
+                            self._logical_time,
+                            f"thread {target_thread_id} still running",
+                            f"THREAD_JOIN target={target_thread_id}",
+                        )
+
             thread.state = ThreadState.BLOCKED_JOIN
             thread.waiting_for_thread = target_thread_id
-            
+
             return False
             
     # Properties

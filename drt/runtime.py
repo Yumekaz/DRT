@@ -17,17 +17,14 @@ Usage:
 import sys
 import threading
 import time
-import traceback
 from pathlib import Path
 from typing import Callable, Any, Optional
-from enum import Enum
 
 from .context import bind_runtime_context, clear_runtime_context
 from .scheduler import Scheduler, RuntimeMode
 from .log import EventLog
-from .thread import DRTThread, clear_current_thread_id, set_current_thread_id
-from .sync import DRTMutex, DRTCondition
-from .intercept import NondeterminismInterceptor, set_interceptor
+from .thread import clear_current_thread_id, set_current_thread_id
+from .intercept import NondeterminismInterceptor
 from .exceptions import (
     DRTError, DivergenceError, LogCorruptionError, 
     IncompleteLogError, RuntimeStateError
@@ -88,6 +85,7 @@ class DRTRuntime:
             self._initialize()
             self._result = target(*args, **kwargs)
             self._wait_for_managed_threads()
+            self._scheduler.verify_replay_complete()
             self._finalize()
             return self._result
             
@@ -134,13 +132,14 @@ class DRTRuntime:
         
     def _cleanup(self):
         """Clean up runtime resources."""
-        if self._initialized:
-            self._scheduler.shutdown()
-            self._join_native_threads()
-
-        clear_current_thread_id()
-        clear_runtime_context()
-        self._log.close()
+        try:
+            if self._initialized:
+                self._scheduler.shutdown()
+                self._join_native_threads()
+        finally:
+            clear_current_thread_id()
+            clear_runtime_context()
+            self._log.close()
 
     def _wait_for_managed_threads(self):
         """Wait for all non-main managed threads to finish or fail loudly."""

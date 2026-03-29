@@ -164,10 +164,16 @@ class DRTThread:
                     
         finally:
             self._exited = True
-            self._scheduler.thread_exited(self._thread_id)
-            self._exit_event.set()
-            clear_current_thread_id()
-            clear_runtime_context()
+            try:
+                self._scheduler.thread_exited(self._thread_id)
+            except BaseException as e:
+                if self._exception is None:
+                    self._exception = e
+                    self._scheduler.report_thread_failure(self._thread_id, e)
+            finally:
+                self._exit_event.set()
+                clear_current_thread_id()
+                clear_runtime_context()
              
     def join(self, timeout: float = None):
         """
@@ -188,10 +194,13 @@ class DRTThread:
             if current_id == self._thread_id:
                 raise RuntimeError("Thread cannot join itself")
 
-            while not self._scheduler.thread_join(current_id, self._thread_id):
+            joined = self._scheduler.thread_join(current_id, self._thread_id)
+            while not joined and not self._exited:
                 self._scheduler.yield_control(current_id)
                 self._scheduler.request_run(current_id)
-                self._scheduler.raise_pending_error()
+
+                if not self._exited:
+                    self._scheduler.raise_pending_error()
         else:
             self._native_thread.join(timeout=timeout)
 

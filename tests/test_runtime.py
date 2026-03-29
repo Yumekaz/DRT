@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from drt import (
     DRTRuntime, DRTThread, DRTMutex, DRTCondition, DRTSemaphore, DRTBarrier,
-    runtime_yield, drt_time, drt_random, drt_randint, drt_seed,
+    runtime_yield, drt_time, drt_random, drt_randint, drt_seed, drt_read_file,
     DeadlockError, DivergenceError, IncompleteLogError, EventType
 )
 
@@ -487,6 +487,122 @@ class TestPhaseOneHardening(unittest.TestCase):
         )
 
 
+class TestPhaseTwoStrictReplay(unittest.TestCase):
+    """Regression tests for strict replay and runtime-local context bindings."""
+
+    def setUp(self):
+        self.log_file = tempfile.NamedTemporaryFile(delete=False, suffix='.log')
+        self.log_path = self.log_file.name
+        self.log_file.close()
+
+    def tearDown(self):
+        try:
+            os.unlink(self.log_path)
+        except:
+            pass
+
+    def test_replay_requires_exact_event_order(self):
+        """Replay should reject reordered event streams instead of matching by type."""
+
+        def record_program():
+            drt_time()
+
+            thread = DRTThread(target=lambda: drt_time())
+            thread.start()
+            thread.join()
+
+        def replay_program():
+            thread = DRTThread(target=lambda: drt_time())
+            thread.start()
+            thread.join()
+            drt_time()
+
+        runtime = DRTRuntime(mode='record', log_path=self.log_path)
+        runtime.run(record_program)
+
+        runtime = DRTRuntime(mode='replay', log_path=self.log_path)
+        with self.assertRaises(DivergenceError):
+            runtime.run(replay_program)
+
+    def test_replay_rejects_join_target_mismatch(self):
+        """THREAD_JOIN replay must validate which target thread completed."""
+
+        def make_program(join_order):
+            def program():
+                def worker():
+                    runtime_yield()
+
+                threads = [DRTThread(target=worker) for _ in range(2)]
+                for thread in threads:
+                    thread.start()
+                for index in join_order:
+                    threads[index].join()
+
+            return program
+
+        runtime = DRTRuntime(mode='record', log_path=self.log_path)
+        runtime.run(make_program((0, 1)))
+
+        runtime = DRTRuntime(mode='replay', log_path=self.log_path)
+        with self.assertRaises(DivergenceError):
+            runtime.run(make_program((1, 0)))
+
+    def test_join_log_records_target_thread(self):
+        """Recorded THREAD_JOIN events should capture the joined target thread ID."""
+        from drt.events import deserialize_thread_join_payload
+
+        joined_thread_ids = []
+
+        def program():
+            t1 = DRTThread(target=lambda: None)
+            t2 = DRTThread(target=lambda: None)
+            t1.start()
+            t2.start()
+
+            joined_thread_ids.extend([t1.thread_id, t2.thread_id])
+
+            t1.join()
+            t2.join()
+
+        runtime = DRTRuntime(mode='record', log_path=self.log_path)
+        runtime.run(program)
+
+        join_targets = [
+            deserialize_thread_join_payload(entry.payload)[0]
+            for entry in runtime.log
+            if entry.event_type == EventType.THREAD_JOIN
+        ]
+
+        self.assertEqual(join_targets, joined_thread_ids)
+
+    def test_replay_rejects_file_read_argument_mismatch(self):
+        """IO replay should validate both path and requested read size."""
+        read_file = tempfile.NamedTemporaryFile(delete=False)
+        try:
+            read_file.write(b'hello')
+            read_file.close()
+
+            runtime = DRTRuntime(mode='record', log_path=self.log_path)
+            runtime.run(lambda: drt_read_file(read_file.name, size=1))
+
+            runtime = DRTRuntime(mode='replay', log_path=self.log_path)
+            with self.assertRaises(DivergenceError):
+                runtime.run(lambda: drt_read_file(read_file.name, size=2))
+        finally:
+            try:
+                os.unlink(read_file.name)
+            except:
+                pass
+
+    def test_runtime_context_is_cleared_after_run(self):
+        """Interceptor calls outside an active runtime should fail instead of reusing stale globals."""
+        runtime = DRTRuntime(mode='record', log_path=self.log_path)
+        runtime.run(lambda: drt_random())
+
+        with self.assertRaisesRegex(RuntimeError, 'No active DRT runtime'):
+            drt_random()
+
+
 class TestLogFormat(unittest.TestCase):
     """Tests for log format and parsing."""
     
@@ -576,6 +692,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestInterceptors))
     suite.addTests(loader.loadTestsFromTestCase(TestDivergence))
     suite.addTests(loader.loadTestsFromTestCase(TestPhaseOneHardening))
+    suite.addTests(loader.loadTestsFromTestCase(TestPhaseTwoStrictReplay))
     suite.addTests(loader.loadTestsFromTestCase(TestLogFormat))
     suite.addTests(loader.loadTestsFromTestCase(TestSynchronizationPrimitives))
     

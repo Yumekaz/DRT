@@ -348,23 +348,13 @@ class NondeterminismInterceptor:
         return str(Path(path))
 
 
-# Module-level interceptor instance (set by runtime)
-_interceptor: Optional[NondeterminismInterceptor] = None
-
-
-def set_interceptor(interceptor: NondeterminismInterceptor):
-    """Set the global interceptor instance."""
-    global _interceptor
-    _interceptor = interceptor
-
-
 def _get_interceptor() -> NondeterminismInterceptor:
-    """Get the global interceptor, raising if not initialized."""
-    interceptor = get_current_interceptor() or _interceptor
+    """Get the interceptor bound to the current runtime context."""
+    interceptor = get_current_interceptor(optional=True)
     if interceptor is None:
         raise RuntimeError(
-            "Interceptor not initialized. "
-            "Use drt.runtime.DRTRuntime to run your program."
+            "No active DRT runtime on this thread. "
+            "Use DRTRuntime.run() to execute DRT code."
         )
     return interceptor
 

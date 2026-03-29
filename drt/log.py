@@ -253,7 +253,19 @@ class EventLog:
                         payload_str = f" value={val}"
                     except:
                         payload_str = f" payload={entry.payload.hex()}"
-                elif entry.event_type in (EventType.LOCK_ACQUIRE, EventType.LOCK_RELEASE):
+                elif entry.event_type == EventType.LOCK_ACQUIRE:
+                    from .events import deserialize_lock_acquire_payload
+                    try:
+                        mutex_id, blocking, immediate = deserialize_lock_acquire_payload(
+                            entry.payload
+                        )
+                        payload_str = (
+                            f" mutex={mutex_id} blocking={blocking}"
+                            f" immediate={immediate}"
+                        )
+                    except:
+                        payload_str = f" payload={entry.payload.hex()}"
+                elif entry.event_type == EventType.LOCK_RELEASE:
                     from .events import deserialize_mutex_payload
                     try:
                         mutex_id = deserialize_mutex_payload(entry.payload)
@@ -265,6 +277,27 @@ class EventLog:
                     try:
                         tid = deserialize_thread_create_payload(entry.payload)
                         payload_str = f" new_thread={tid}"
+                    except:
+                        payload_str = f" payload={entry.payload.hex()}"
+                elif entry.event_type == EventType.THREAD_JOIN:
+                    from .events import deserialize_thread_join_payload
+                    try:
+                        tid, immediate = deserialize_thread_join_payload(entry.payload)
+                        payload_str = (
+                            f" target_thread={tid} immediate={immediate}"
+                        )
+                    except:
+                        payload_str = f" payload={entry.payload.hex()}"
+                elif entry.event_type == EventType.IO_READ:
+                    from .events import deserialize_io_read_payload
+                    try:
+                        path, size, data = deserialize_io_read_payload(entry.payload)
+                        if path:
+                            payload_str = (
+                                f" path={path!r} size={size} bytes={len(data)}"
+                            )
+                        else:
+                            payload_str = f" bytes={len(data)}"
                     except:
                         payload_str = f" payload={entry.payload.hex()}"
                 else:

@@ -131,6 +131,19 @@ def deserialize_mutex_payload(payload: bytes) -> int:
     return struct.unpack('<I', payload)[0]
 
 
+def serialize_lock_acquire_payload(
+    mutex_id: int, blocking: bool, acquired_immediately: bool
+) -> bytes:
+    """Serialize mutex acquire metadata for LOCK_ACQUIRE events."""
+    return struct.pack('<IBB', mutex_id, int(blocking), int(acquired_immediately))
+
+
+def deserialize_lock_acquire_payload(payload: bytes) -> tuple[int, bool, bool]:
+    """Deserialize mutex acquire metadata from payload."""
+    mutex_id, blocking, acquired_immediately = struct.unpack('<IBB', payload)
+    return mutex_id, bool(blocking), bool(acquired_immediately)
+
+
 def serialize_cond_payload(cond_id: int) -> bytes:
     """Serialize condition variable ID for COND_WAIT events."""
     return struct.pack('<I', cond_id)
@@ -171,11 +184,44 @@ def deserialize_thread_create_payload(payload: bytes) -> int:
     return struct.unpack('<I', payload)[0]
 
 
-def serialize_io_payload(data: bytes) -> bytes:
-    """Serialize I/O data (already bytes)."""
-    return data
+def serialize_thread_join_payload(
+    target_thread_id: int, completed_immediately: bool
+) -> bytes:
+    """Serialize joined thread ID and completion mode for THREAD_JOIN events."""
+    return struct.pack('<IB', target_thread_id, int(completed_immediately))
 
 
-def deserialize_io_payload(payload: bytes) -> bytes:
-    """Deserialize I/O data."""
-    return payload
+def deserialize_thread_join_payload(payload: bytes) -> tuple[int, bool]:
+    """Deserialize joined thread ID and completion mode from payload."""
+    target_thread_id, completed_immediately = struct.unpack('<IB', payload)
+    return target_thread_id, bool(completed_immediately)
+
+
+def serialize_io_read_payload(path: str, size: int, data: bytes) -> bytes:
+    """Serialize file-read metadata and returned bytes for IO_READ events."""
+    path_bytes = path.encode('utf-8')
+    header = struct.pack('<qI', size, len(path_bytes))
+    return header + path_bytes + data
+
+
+def deserialize_io_read_payload(payload: bytes) -> tuple[str, int, bytes]:
+    """
+    Deserialize IO_READ payload into (path, size, data).
+
+    Older logs stored only raw bytes. Those replay as path="" and size=-1.
+    """
+    if len(payload) < 12:
+        return "", -1, payload
+
+    try:
+        size, path_len = struct.unpack('<qI', payload[:12])
+    except struct.error:
+        return "", -1, payload
+
+    path_end = 12 + path_len
+    if path_end > len(payload):
+        return "", -1, payload
+
+    path = payload[12:path_end].decode('utf-8')
+    data = payload[path_end:]
+    return path, size, data
