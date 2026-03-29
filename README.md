@@ -1,119 +1,158 @@
-# DRT - Deterministic Record-and-Replay Runtime
+# DRT
 
-A user-space runtime for reproducing concurrency bugs in Python.
+Deterministic record-and-replay runtime for DRT-instrumented Python concurrency code.
 
----
+<p align="left">
+  <a href="#why-this-project-is-interesting">Why it matters</a> |
+  <a href="#quick-start">Quick start</a> |
+  <a href="#how-drt-works">How it works</a> |
+  <a href="#api-surface">API surface</a> |
+  <a href="#limitations-and-non-goals">Limitations</a> |
+  <a href="#project-layout">Project layout</a>
+</p>
 
-## The Problem
+> Status
+>
+> DRT is a focused systems project and a strong prototype. It can deterministically record and replay executions that stay inside the DRT API surface. It is not a drop-in debugger for arbitrary Python threading code, and it does not monkey-patch the standard library.
 
-Concurrency bugs are nondeterministic. They depend on thread scheduling, which varies between runs:
+## Why This Project Is Interesting
 
-```
-$ python buggy_program.py
-Counter: 287  # Bug! Expected 300
+Concurrency bugs are hard because they are timing-sensitive:
 
-$ python buggy_program.py
-Counter: 300  # Works fine
-
-$ python buggy_program.py  # Add print statements to debug
-Counter: 300  # Bug disappeared!
-```
-
-The bug is real, but you can't reproduce it. Adding logging changes timing. Attaching a debugger changes timing. The bug vanishes when you try to observe it.
-
-## The Solution
-
-DRT records the exact thread schedule and all nondeterministic inputs:
-
-```
-$ python buggy_program.py --record bug.log
-Counter: 287  # Bug captured!
-
-$ python buggy_program.py --replay bug.log
-Counter: 287  # Bug reproduced!
-
-$ python buggy_program.py --replay bug.log
-Counter: 287  # Bug reproduced again!
-
-# Now debug with confidence - the bug won't disappear
+```text
+Run 1: works
+Run 2: fails
+Run 3: works again
+Run 4: fails only after adding debug prints
 ```
 
----
+That makes debugging painful. The execution you need disappears as soon as you try to observe it.
+
+DRT attacks that problem by controlling scheduling and recording the execution decisions that matter:
+
+- thread scheduling decisions
+- thread lifecycle events
+- join completion events
+- mutex and condition interactions
+- selected nondeterministic inputs such as time, random values, and file reads
+
+Then DRT replays the same execution and fails loudly if the replayed program drifts from the recording.
+
+## What DRT Actually Is
+
+DRT is best understood as:
+
+> a deterministic runtime for Python programs that explicitly opt into DRT-managed threads, locks, conditions, and nondeterministic APIs.
+
+That narrow scope is intentional. It keeps the system understandable, testable, and honest.
 
 ## Quick Start
 
+### 1. Install
+
+```bash
+pip install -e .
+```
+
+### 2. Record a buggy execution
+
 ```python
-from drt import DRTRuntime, DRTThread, DRTMutex, runtime_yield
+from drt import DRTRuntime, DRTThread, runtime_yield
+
 
 def buggy_program():
     counter = [0]
-    
+
     def worker():
         for _ in range(100):
-            # Bug: read-modify-write without lock
-            temp = counter[0]
-            runtime_yield()  # Other thread can run here
-            counter[0] = temp + 1
-    
+            snapshot = counter[0]
+            runtime_yield()  # Intentional race window
+            counter[0] = snapshot + 1
+
     threads = [DRTThread(target=worker) for _ in range(3)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    
-    print(f"Counter: {counter[0]}")  # Should be 300, but isn't
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
 
-# Record the buggy execution
-runtime = DRTRuntime(mode='record', log_path='bug.log')
-runtime.run(buggy_program)
+    return counter[0]
 
-# Replay - reproduces the exact same bug
-runtime = DRTRuntime(mode='replay', log_path='bug.log')
-runtime.run(buggy_program)
+
+runtime = DRTRuntime(mode="record", log_path="bug.log")
+recorded = runtime.run(buggy_program)
+print("recorded:", recorded)
 ```
 
----
+### 3. Replay the same execution
 
-## How It Works
+```python
+runtime = DRTRuntime(mode="replay", log_path="bug.log")
+replayed = runtime.run(buggy_program)
+print("replayed:", replayed)
+```
 
-1. **Controlled Scheduling**: Threads only run when the scheduler permits
-2. **Yield Points**: Threads can only switch at specific points (lock acquire, lock release, explicit yield)
-3. **Logged Decisions**: Every scheduling decision is recorded
-4. **Exact Replay**: During replay, the log is followed exactly
+If the replayed execution does not match the recording, DRT raises `DivergenceError` instead of silently continuing.
 
-See [DESIGN.md](DESIGN.md) for architectural decisions and tradeoffs.
+## How DRT Works
 
----
+```mermaid
+flowchart LR
+    A["DRT-instrumented Python program"] --> B["Record mode"]
+    B --> C["Event log"]
+    C --> D["Replay mode"]
+    D --> E["Same supported execution path"]
+    D --> F["DivergenceError if behavior drifts"]
+```
 
-## API
+At a high level:
 
-### Runtime
+1. Managed threads only run when the scheduler gives permission.
+2. Yield points define where thread interleavings can happen.
+3. Record mode logs scheduler decisions and supported nondeterministic inputs.
+4. Replay mode consumes that log in strict order.
+5. If the next event does not match, replay stops with an error.
+
+See [DESIGN.md](DESIGN.md) for the design rationale and the tradeoffs behind the explicit API model.
+
+## API Surface
+
+| Standard library idea | DRT API |
+| --- | --- |
+| `threading.Thread` | `DRTThread` |
+| `threading.Lock` | `DRTMutex` |
+| `threading.Condition` | `DRTCondition` |
+| `time.time()` | `drt_time()` |
+| `random.random()` | `drt_random()` |
+| `random.seed()` | `drt_seed()` |
+| file reads | `drt_read_file()` / `drt_read_text()` |
+
+### Core runtime
 
 ```python
 from drt import DRTRuntime
 
-# Record execution
-runtime = DRTRuntime(mode='record', log_path='execution.log')
-runtime.run(my_program)
+runtime = DRTRuntime(mode="record", log_path="execution.log")
+result = runtime.run(my_program)
 
-# Replay execution
-runtime = DRTRuntime(mode='replay', log_path='execution.log')
-runtime.run(my_program)
+runtime = DRTRuntime(mode="replay", log_path="execution.log")
+result = runtime.run(my_program)
 ```
 
-### Threading
+### Threading and scheduling
 
 ```python
 from drt import DRTThread, runtime_yield
 
-def worker():
-    print("Working")
-    runtime_yield()  # Explicit yield point
-    print("Done")
 
-t = DRTThread(target=worker)
-t.start()
-t.join()
+def worker():
+    print("step 1")
+    runtime_yield()
+    print("step 2")
+
+
+thread = DRTThread(target=worker)
+thread.start()
+thread.join()
 ```
 
 ### Synchronization
@@ -121,113 +160,125 @@ t.join()
 ```python
 from drt import DRTMutex, DRTCondition, DRTSemaphore, DRTBarrier
 
-# Mutex
 mutex = DRTMutex()
-with mutex:
-    # Critical section
-    pass
-
-# Condition Variable
 cond = DRTCondition(mutex)
-with mutex:
-    while not ready:
-        cond.wait()
-
-# Semaphore
-sem = DRTSemaphore(value=3)
-with sem:
-    # Up to 3 concurrent
-    pass
-
-# Barrier
-barrier = DRTBarrier(parties=4)
-barrier.wait()  # Blocks until 4 threads arrive
+sem = DRTSemaphore(2)
+barrier = DRTBarrier(3)
 ```
 
-### Nondeterminism Interceptors
+### Nondeterminism capture
 
 ```python
-from drt import drt_time, drt_random, drt_randint, drt_read_file
+from drt import drt_time, drt_random, drt_seed, drt_read_file
 
-# Time (recorded/replayed)
+drt_seed(123)
 timestamp = drt_time()
-
-# Random (recorded/replayed)
 value = drt_random()
-n = drt_randint(1, 100)
-
-# File I/O (recorded/replayed)
-data = drt_read_file('input.txt')
+data = drt_read_file("input.txt")
 ```
 
----
-
-## Installation
+## Run The Project
 
 ```bash
-cd drt-project
-pip install -e .
+python tests/test_runtime.py
+python -m unittest discover -v
 ```
 
----
+The main regression suite lives in [tests/test_runtime.py](tests/test_runtime.py).
 
-## Running Tests
+## Interactive Tour
 
-```bash
-# All tests
-python -m pytest tests/ -v
+<details>
+<summary><strong>What replay validates today</strong></summary>
 
-# Race condition demo
-python tests/test_race_condition.py
+- strict event ordering
+- scheduled thread identity
+- join target identity and completion mode
+- condition wake ordering within the recorded trace
+- file-read path and requested size
+- replay completeness at the end of execution
+
+</details>
+
+<details>
+<summary><strong>What makes this a good systems project</strong></summary>
+
+- custom scheduler instead of standard thread execution
+- explicit event log format
+- runtime-managed concurrency primitives
+- divergence detection instead of best-effort replay
+- bounded scope with clear non-goals
+
+</details>
+
+<details>
+<summary><strong>Where to look first in the codebase</strong></summary>
+
+- [drt/runtime.py](drt/runtime.py): runtime lifecycle and orchestration
+- [drt/scheduler.py](drt/scheduler.py): deterministic scheduling and replay validation
+- [drt/thread.py](drt/thread.py): managed thread lifecycle and join behavior
+- [drt/sync.py](drt/sync.py): mutexes, conditions, semaphores, barriers
+- [drt/intercept.py](drt/intercept.py): time, random, and file-read interception
+- [tests/test_runtime.py](tests/test_runtime.py): regression coverage
+
+</details>
+
+## Limitations And Non-Goals
+
+### In scope
+
+- single-process Python programs
+- DRT-managed threads and synchronization primitives
+- explicit, opt-in nondeterminism interception
+- deterministic replay inside the supported DRT API surface
+
+### Out of scope
+
+- arbitrary `threading.Thread` programs with no instrumentation
+- transparent monkey-patching of the Python runtime
+- multiprocess or distributed replay
+- signals, networking, and external process orchestration
+- native extensions that bypass the DRT control model
+
+If a program uses the standard library directly instead of the DRT API, DRT does not and should not pretend to guarantee replay for that code path.
+
+## Project Layout
+
+```text
+drt/
+|-- drt/
+|   |-- __init__.py
+|   |-- context.py
+|   |-- events.py
+|   |-- exceptions.py
+|   |-- intercept.py
+|   |-- log.py
+|   |-- runtime.py
+|   |-- scheduler.py
+|   |-- sync.py
+|   `-- thread.py
+|-- tests/
+|   |-- __init__.py
+|   |-- test_race_condition.py
+|   `-- test_runtime.py
+|-- demo/
+|-- docs/
+|-- DESIGN.md
+|-- README.md
+`-- setup.py
 ```
 
----
+## Why Someone Would Notice This Project
 
-## Limitations
+This is not another CRUD app or wrapper around an API. DRT shows:
 
-**In Scope:**
-- Single process, multiple Python threads
-- User-space runtime (no kernel modifications)
-- Explicit API (must use DRT primitives)
+- runtime and scheduler design
+- binary log thinking
+- concurrency debugging instincts
+- willingness to work in hard, failure-prone territory
+- discipline around scope and invariants
 
-**Out of Scope:**
-- Distributed systems
-- Automatic interception (no monkey-patching)
-- External processes, signals
-- GUI debugger
-
-**Important:** You must use `DRTThread`, `DRTMutex`, `drt_time()`, etc. instead of standard library equivalents. DRT does not automatically intercept `threading.Thread` or `time.time()`. This is intentional - see [DESIGN.md](DESIGN.md) for why.
-
----
-
-## Project Structure
-
-```
-drt-project/
-├── drt/                    # Core runtime
-│   ├── __init__.py         # Public API
-│   ├── runtime.py          # Main controller
-│   ├── scheduler.py        # Deterministic scheduler  
-│   ├── thread.py           # Managed threads
-│   ├── sync.py             # Mutex, Condition, etc.
-│   ├── intercept.py        # Time, random, I/O capture
-│   ├── log.py              # Binary event log
-│   ├── events.py           # Event types
-│   └── exceptions.py       # Error types
-├── tests/
-│   ├── test_runtime.py     # Core tests
-│   └── test_race_condition.py  # Race condition demo
-├── demo/
-│   ├── run_demo.py         # Full demonstration
-│   ├── bank_transfer.py    # Bank transfer bug
-│   └── producer_consumer.py # Producer-consumer bug
-├── docs/                   # Documentation
-├── DESIGN.md               # Design decisions & tradeoffs
-├── README.md               # This file
-└── setup.py
-```
-
----
+If you want a project that signals systems depth instead of surface-level app work, this is the right kind of repo.
 
 ## License
 
