@@ -9,10 +9,12 @@ deterministic execution.
 """
 
 import threading
+import time
 from typing import Callable, Any, Optional, Tuple
 from functools import wraps
 
 from .scheduler import Scheduler, ThreadState
+from .exceptions import RuntimeStateError
 
 
 # Thread-local storage for current thread ID
@@ -138,10 +140,10 @@ class DRTThread:
             self._scheduler.request_run(self._thread_id)
             
             if self._scheduler.is_running and self._target:
-                try:
-                    self._result = self._target(*self._args, **self._kwargs)
-                except Exception as e:
-                    self._exception = e
+                self._result = self._target(*self._args, **self._kwargs)
+        except BaseException as e:
+            self._exception = e
+            self._scheduler.report_thread_failure(self._thread_id, e)
                     
         finally:
             self._exited = True
@@ -159,15 +161,36 @@ class DRTThread:
             raise RuntimeError("Thread not started")
             
         current_id = get_current_thread_id()
+        deadline = None if timeout is None else time.monotonic() + timeout
         
         # Keep yielding until the target thread exits
         while not self._exited and self._scheduler.is_running:
+            if deadline is not None and time.monotonic() >= deadline:
+                return
+
             if current_id >= 0:
                 self._scheduler.yield_control(current_id)
                 self._scheduler.request_run(current_id)
             else:
                 # Not a managed thread, just wait
-                self._native_thread.join(timeout=0.01)
+                remaining = (
+                    0.01 if deadline is None
+                    else max(0.0, min(0.01, deadline - time.monotonic()))
+                )
+                self._native_thread.join(timeout=remaining)
+
+        if not self._exited and not self._scheduler.is_running:
+            self._scheduler.raise_pending_error()
+            raise RuntimeStateError(
+                f"Scheduler stopped before thread {self._thread_id} exited"
+            )
+
+        if self._exception is not None:
+            raise self._exception
+
+        thread_exception = self._scheduler.get_thread_exception(self._thread_id)
+        if thread_exception is not None:
+            raise thread_exception
                 
     @property
     def thread_id(self) -> int:

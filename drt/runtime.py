@@ -16,6 +16,7 @@ Usage:
 
 import sys
 import threading
+import time
 import traceback
 from pathlib import Path
 from typing import Callable, Any, Optional
@@ -91,6 +92,7 @@ class DRTRuntime:
         try:
             self._initialize()
             self._result = target(*args, **kwargs)
+            self._wait_for_managed_threads()
             self._finalize()
             return self._result
             
@@ -136,7 +138,45 @@ class DRTRuntime:
         
     def _cleanup(self):
         """Clean up runtime resources."""
+        if self._initialized:
+            self._scheduler.shutdown()
+            self._join_native_threads()
+
         self._log.close()
+
+    def _wait_for_managed_threads(self):
+        """Wait for all non-main managed threads to finish or fail loudly."""
+        self._scheduler.raise_pending_error()
+
+        while self._scheduler.has_live_threads(exclude_thread_ids={0}):
+            if not self._scheduler.has_runnable_threads(exclude_thread_ids={0}):
+                raise self._scheduler.ensure_deadlock_error(
+                    "Main target returned while other managed threads are still blocked"
+                )
+
+            self._scheduler.yield_control(0)
+            self._scheduler.request_run(0)
+            self._scheduler.raise_pending_error()
+
+        self._scheduler.raise_pending_error()
+
+    def _join_native_threads(self, timeout: float = 1.0):
+        """Best-effort join for worker native threads before closing the log."""
+        deadline = time.monotonic() + timeout
+        current_thread = threading.current_thread()
+
+        while time.monotonic() < deadline:
+            live_threads = []
+
+            for native_thread in self._scheduler.get_native_threads(exclude_thread_ids={0}):
+                if native_thread is current_thread:
+                    continue
+                if native_thread.is_alive():
+                    live_threads.append(native_thread)
+                    native_thread.join(timeout=0.01)
+
+            if not live_threads:
+                return
         
     def _handle_exception(self, exc: Exception):
         """Handle an exception during execution."""

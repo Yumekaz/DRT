@@ -15,7 +15,7 @@ In REPLAY mode:
 """
 
 import threading
-from typing import Dict, Set, Optional, List, Callable
+from typing import Dict, Set, Optional, List, Callable, Any
 from enum import Enum, auto
 from dataclasses import dataclass, field
 
@@ -26,7 +26,12 @@ from .events import (
     deserialize_cond_wake_payload
 )
 from .log import EventLog
-from .exceptions import DivergenceError, SchedulerError, RuntimeStateError
+from .exceptions import (
+    DeadlockError,
+    DivergenceError,
+    SchedulerError,
+    RuntimeStateError,
+)
 
 
 class RuntimeMode(Enum):
@@ -60,6 +65,7 @@ class ManagedThread:
     blocked_on_mutex: Optional[int] = None
     blocked_on_cond: Optional[int] = None
     waiting_for_thread: Optional[int] = None
+    exception: Optional[BaseException] = None
     
     def __hash__(self):
         return hash(self.thread_id)
@@ -91,6 +97,7 @@ class Scheduler:
         
         # Synchronization state
         self._mutex_owners: Dict[int, int] = {}  # mutex_id -> thread_id
+        self._mutex_pending_owners: Dict[int, int] = {}  # mutex_id -> thread_id
         self._mutex_waiters: Dict[int, List[int]] = {}  # mutex_id -> [thread_ids]
         self._cond_waiters: Dict[int, List[int]] = {}  # cond_id -> [thread_ids]
         
@@ -102,6 +109,9 @@ class Scheduler:
         self._lock = threading.Lock()
         self._running = False
         self._shutdown_requested = False
+        self._deadlock_error: Optional[DeadlockError] = None
+        self._fatal_exception: Optional[BaseException] = None
+        self._failing_thread_id: Optional[int] = None
         
         # Main thread registration
         self._main_thread_registered = False
@@ -183,6 +193,104 @@ class Scheduler:
             thread = self._threads.get(thread_id)
             if thread:
                 thread.state = ThreadState.RUNNABLE
+
+    def report_thread_failure(self, thread_id: int, exc: BaseException):
+        """Record an unhandled worker-thread exception and wake the runtime."""
+        with self._lock:
+            thread = self._threads.get(thread_id)
+            if thread:
+                thread.exception = exc
+
+            if self._fatal_exception is None:
+                self._fatal_exception = exc
+                self._failing_thread_id = thread_id
+                self._shutdown_requested = True
+
+                for managed in self._threads.values():
+                    managed.run_permission.set()
+
+    def get_thread_exception(self, thread_id: int) -> Optional[BaseException]:
+        """Get the stored exception for a managed thread, if any."""
+        with self._lock:
+            thread = self._threads.get(thread_id)
+            return thread.exception if thread else None
+
+    def has_live_threads(self, exclude_thread_ids: Optional[Set[int]] = None) -> bool:
+        """Check whether any managed threads are still alive."""
+        exclude = exclude_thread_ids or set()
+        with self._lock:
+            return any(
+                tid not in exclude and thread.state != ThreadState.EXITED
+                for tid, thread in self._threads.items()
+            )
+
+    def has_runnable_threads(
+        self, exclude_thread_ids: Optional[Set[int]] = None
+    ) -> bool:
+        """Check whether any managed threads are runnable."""
+        exclude = exclude_thread_ids or set()
+        with self._lock:
+            return any(tid not in exclude for tid in self._get_runnable_threads())
+
+    def get_native_threads(
+        self, exclude_thread_ids: Optional[Set[int]] = None
+    ) -> List[threading.Thread]:
+        """Return native threads for managed threads that have been started."""
+        exclude = exclude_thread_ids or set()
+        with self._lock:
+            return [
+                thread.native_thread
+                for tid, thread in self._threads.items()
+                if tid not in exclude and thread.native_thread is not None
+            ]
+
+    def ensure_deadlock_error(
+        self, message: str = "No runnable managed threads remain"
+    ) -> DeadlockError:
+        """Create and cache a deadlock error from current thread state."""
+        with self._lock:
+            if self._deadlock_error is None:
+                self._deadlock_error = DeadlockError(
+                    message,
+                    self._logical_time,
+                    self._format_thread_states_unlocked(),
+                )
+
+            return self._deadlock_error
+
+    def raise_pending_error(self):
+        """Raise any fatal scheduler error that should abort execution."""
+        error = None
+
+        with self._lock:
+            if self._fatal_exception is not None:
+                error = self._fatal_exception
+            elif self._deadlock_error is not None:
+                error = self._deadlock_error
+
+        if error is not None:
+            raise error
+
+    def _format_thread_states_unlocked(self) -> str:
+        """Format managed thread state for diagnostics. Requires self._lock."""
+        parts = []
+
+        for tid in sorted(self._threads):
+            thread = self._threads[tid]
+            status = [thread.state.name]
+
+            if thread.blocked_on_mutex is not None:
+                status.append(f"mutex={thread.blocked_on_mutex}")
+            if thread.blocked_on_cond is not None:
+                status.append(f"cond={thread.blocked_on_cond}")
+            if thread.waiting_for_thread is not None:
+                status.append(f"join={thread.waiting_for_thread}")
+            if thread.exception is not None:
+                status.append(f"exc={type(thread.exception).__name__}")
+
+            parts.append(f"{tid}:{'/'.join(status)}")
+
+        return ", ".join(parts)
                 
     def thread_exited(self, thread_id: int):
         """Called when a thread exits."""
@@ -193,7 +301,7 @@ class Scheduler:
                 thread.run_permission.clear()
                 
                 # Log the exit
-                if self.mode == RuntimeMode.RECORD:
+                if self.mode == RuntimeMode.RECORD and self.log.is_recording:
                     self._log_event(EventType.THREAD_EXIT, b'', thread_id)
                     
                 # Wake any threads waiting to join
@@ -220,7 +328,9 @@ class Scheduler:
             
         # Wait for permission
         thread.run_permission.wait()
-        
+
+        self.raise_pending_error()
+
         with self._lock:
             self._current_thread_id = thread_id
             thread.state = ThreadState.RUNNING
@@ -275,6 +385,16 @@ class Scheduler:
             )
             if all_exited:
                 self._shutdown_requested = True
+            else:
+                self._deadlock_error = DeadlockError(
+                    "No runnable managed threads remain",
+                    self._logical_time,
+                    self._format_thread_states_unlocked(),
+                )
+                self._shutdown_requested = True
+
+                for thread in self._threads.values():
+                    thread.run_permission.set()
             return
             
         if self.mode == RuntimeMode.REPLAY:
@@ -393,6 +513,19 @@ class Scheduler:
             payload=payload
         )
         self.log.append(entry)
+
+    def _grant_mutex_to_waiter_unlocked(self, mutex_id: int):
+        """Grant the mutex to the next waiter without letting another thread steal it."""
+        waiters = self._mutex_waiters.get(mutex_id, [])
+        if not waiters:
+            return
+
+        next_owner = waiters.pop(0)
+        self._mutex_pending_owners[mutex_id] = next_owner
+
+        thread = self._threads[next_owner]
+        thread.state = ThreadState.RUNNABLE
+        thread.blocked_on_mutex = None
         
     # Mutex operations
     
@@ -416,14 +549,20 @@ class Scheduler:
                 )
                 
             owner = self._mutex_owners.get(mutex_id)
+            pending_owner = self._mutex_pending_owners.get(mutex_id)
             
-            if owner is None:
+            if owner is None and pending_owner is None:
                 # Mutex is free - acquire it
                 self._mutex_owners[mutex_id] = thread_id
                 return True
-            elif owner == thread_id:
-                # Already own it (reentrant - not supported, but don't block)
+            elif owner is None and pending_owner == thread_id:
+                del self._mutex_pending_owners[mutex_id]
+                self._mutex_owners[mutex_id] = thread_id
                 return True
+            elif owner == thread_id:
+                raise SchedulerError(
+                    f"Reentrant mutex acquisition is not supported for mutex {mutex_id}"
+                )
             else:
                 # Blocked - add to waiters
                 thread = self._threads[thread_id]
@@ -432,9 +571,58 @@ class Scheduler:
                 
                 if mutex_id not in self._mutex_waiters:
                     self._mutex_waiters[mutex_id] = []
-                self._mutex_waiters[mutex_id].append(thread_id)
+                if thread_id not in self._mutex_waiters[mutex_id]:
+                    self._mutex_waiters[mutex_id].append(thread_id)
                 
                 return False
+
+    def mutex_try_lock(self, thread_id: int, mutex_id: int) -> bool:
+        """
+        Attempt to acquire a mutex without mutating blocked/waiter state.
+
+        Returns:
+            True if the mutex was acquired, False if another thread owns it.
+        """
+        with self._lock:
+            owner = self._mutex_owners.get(mutex_id)
+            pending_owner = self._mutex_pending_owners.get(mutex_id)
+
+            if owner is None and pending_owner is None:
+                self._mutex_owners[mutex_id] = thread_id
+
+                if self.mode == RuntimeMode.RECORD:
+                    self._log_event(
+                        EventType.LOCK_ACQUIRE,
+                        serialize_mutex_payload(mutex_id),
+                        thread_id,
+                    )
+
+                return True
+
+            if owner is None and pending_owner == thread_id:
+                del self._mutex_pending_owners[mutex_id]
+                self._mutex_owners[mutex_id] = thread_id
+
+                if self.mode == RuntimeMode.RECORD:
+                    self._log_event(
+                        EventType.LOCK_ACQUIRE,
+                        serialize_mutex_payload(mutex_id),
+                        thread_id,
+                    )
+
+                return True
+
+            if owner == thread_id:
+                raise SchedulerError(
+                    f"Reentrant mutex acquisition is not supported for mutex {mutex_id}"
+                )
+
+            return False
+
+    def owns_mutex(self, thread_id: int, mutex_id: int) -> bool:
+        """Check whether a mutex is currently assigned to a specific thread."""
+        with self._lock:
+            return self._mutex_owners.get(mutex_id) == thread_id
                 
     def mutex_unlock(self, thread_id: int, mutex_id: int):
         """
@@ -463,14 +651,7 @@ class Scheduler:
             del self._mutex_owners[mutex_id]
             
             # Wake first waiter (FIFO)
-            waiters = self._mutex_waiters.get(mutex_id, [])
-            if waiters:
-                next_owner = waiters.pop(0)
-                self._mutex_owners[mutex_id] = next_owner
-                
-                thread = self._threads[next_owner]
-                thread.state = ThreadState.RUNNABLE
-                thread.blocked_on_mutex = None
+            self._grant_mutex_to_waiter_unlocked(mutex_id)
                 
     # Condition variable operations
     
@@ -498,13 +679,7 @@ class Scheduler:
                 del self._mutex_owners[mutex_id]
                 
                 # Wake first mutex waiter
-                waiters = self._mutex_waiters.get(mutex_id, [])
-                if waiters:
-                    next_owner = waiters.pop(0)
-                    self._mutex_owners[mutex_id] = next_owner
-                    next_thread = self._threads[next_owner]
-                    next_thread.state = ThreadState.RUNNABLE
-                    next_thread.blocked_on_mutex = None
+                self._grant_mutex_to_waiter_unlocked(mutex_id)
                     
             # Block on condition
             thread = self._threads[thread_id]

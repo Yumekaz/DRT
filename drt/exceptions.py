@@ -68,3 +68,26 @@ class UnloggedNondeterminismError(DRTError):
 class SchedulerError(DRTError):
     """Raised when the scheduler encounters an unrecoverable error."""
     pass
+
+
+class DeadlockError(DRTError):
+    """
+    Raised when the runtime detects a deadlock.
+
+    Attributes:
+        logical_time: Scheduler logical time at detection
+        thread_states: Human-readable summary of managed thread states
+    """
+
+    def __init__(self, message: str, logical_time: int = -1,
+                 thread_states: str = ""):
+        self.logical_time = logical_time
+        self.thread_states = thread_states
+
+        details = (
+            f"Deadlock at logical time {logical_time}: {message}"
+        )
+        if thread_states:
+            details += f"\n  Thread states: {thread_states}"
+
+        super().__init__(details)

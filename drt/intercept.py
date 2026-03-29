@@ -120,7 +120,7 @@ class NondeterminismInterceptor:
         thread_id = get_current_thread_id()
         
         if self.mode == RuntimeMode.RECORD:
-            value = _random.random()
+            value = self._random_state.random()
             self._log_value(EventType.RANDOM_READ, value, thread_id)
             return value
         else:

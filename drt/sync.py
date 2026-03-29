@@ -13,6 +13,7 @@ from typing import Optional, Callable
 
 from .scheduler import Scheduler
 from .thread import get_current_thread_id
+from .exceptions import RuntimeStateError
 
 
 # Global mutex/condition ID counter
@@ -83,6 +84,15 @@ class DRTMutex:
         thread_id = get_current_thread_id()
         if thread_id < 0:
             raise RuntimeError("acquire() must be called from a DRTThread")
+
+        if self._owner == thread_id:
+            raise RuntimeError("Reentrant mutex acquisition is not supported")
+
+        if not blocking:
+            acquired = self._scheduler.mutex_try_lock(thread_id, self._id)
+            if acquired:
+                self._owner = thread_id
+            return acquired
             
         # Try to acquire
         acquired = self._scheduler.mutex_lock(thread_id, self._id)
@@ -100,6 +110,16 @@ class DRTMutex:
         # Wait to be scheduled again (after lock is granted)
         while True:
             self._scheduler.request_run(thread_id)
+
+            if not self._scheduler.is_running:
+                self._scheduler.raise_pending_error()
+                raise RuntimeStateError(
+                    f"Scheduler stopped while thread {thread_id} was waiting for mutex {self._id}"
+                )
+
+            if self._scheduler.owns_mutex(thread_id, self._id):
+                self._owner = thread_id
+                return True
             
             # Check if we now own the lock
             acquired = self._scheduler.mutex_lock(thread_id, self._id)
@@ -234,6 +254,16 @@ class DRTCondition:
         # Wait to be woken and reacquire mutex
         while True:
             self._scheduler.request_run(thread_id)
+
+            if not self._scheduler.is_running:
+                self._scheduler.raise_pending_error()
+                raise RuntimeStateError(
+                    f"Scheduler stopped while thread {thread_id} was waiting on condition {self._id}"
+                )
+
+            if self._scheduler.owns_mutex(thread_id, self._lock._id):
+                self._lock._owner = thread_id
+                return True
             
             # Try to reacquire the mutex
             acquired = self._scheduler.mutex_lock(thread_id, self._lock._id)

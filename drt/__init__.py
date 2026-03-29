@@ -92,6 +92,7 @@ from .intercept import (
 # Exceptions
 from .exceptions import (
     DRTError,
+    DeadlockError,
     DivergenceError,
     LogCorruptionError,
     IncompleteLogError,
@@ -143,6 +144,7 @@ __all__ = [
     
     # Exceptions
     'DRTError',
+    'DeadlockError',
     'DivergenceError',
     'LogCorruptionError',
     'IncompleteLogError',

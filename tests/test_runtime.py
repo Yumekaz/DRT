@@ -21,8 +21,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from drt import (
     DRTRuntime, DRTThread, DRTMutex, DRTCondition, DRTSemaphore, DRTBarrier,
-    runtime_yield, drt_time, drt_random, drt_randint,
-    DivergenceError, IncompleteLogError, EventType
+    runtime_yield, drt_time, drt_random, drt_randint, drt_seed,
+    DeadlockError, DivergenceError, IncompleteLogError, EventType
 )
 
 
@@ -305,6 +305,26 @@ class TestInterceptors(unittest.TestCase):
         
         self.assertEqual(randoms_record, randoms_replay)
 
+    def test_seed_controls_random_sequence(self):
+        """Test that drt_seed controls the internal deterministic RNG."""
+        values_record = []
+        values_replay = []
+
+        def program(values):
+            drt_seed(123)
+            values.append(drt_random())
+            drt_seed(123)
+            values.append(drt_random())
+
+        runtime = DRTRuntime(mode='record', log_path=self.log_path)
+        runtime.run(lambda: program(values_record))
+
+        runtime = DRTRuntime(mode='replay', log_path=self.log_path)
+        runtime.run(lambda: program(values_replay))
+
+        self.assertEqual(values_record, values_replay)
+        self.assertEqual(values_record[0], values_record[1])
+
 
 class TestDivergence(unittest.TestCase):
     """Tests for divergence detection."""
@@ -330,6 +350,141 @@ class TestDivergence(unittest.TestCase):
         
         with self.assertRaises(IncompleteLogError):
             runtime.run(lambda: None)
+
+
+class TestPhaseOneHardening(unittest.TestCase):
+    """Regression tests for the Phase 1 runtime hardening work."""
+
+    def setUp(self):
+        self.log_file = tempfile.NamedTemporaryFile(delete=False, suffix='.log')
+        self.log_path = self.log_file.name
+        self.log_file.close()
+
+    def tearDown(self):
+        try:
+            os.unlink(self.log_path)
+        except:
+            pass
+
+    def test_join_propagates_worker_exception(self):
+        """Unhandled worker exceptions should fail the run."""
+
+        def program():
+            def worker():
+                raise ValueError('worker failed')
+
+            thread = DRTThread(target=worker)
+            thread.start()
+            thread.join()
+
+        runtime = DRTRuntime(mode='record', log_path=self.log_path)
+
+        with self.assertRaisesRegex(ValueError, 'worker failed'):
+            runtime.run(program)
+
+    def test_runtime_waits_for_unjoined_threads(self):
+        """Runtime should not finalize before unjoined workers finish."""
+        results = []
+
+        def program():
+            def worker():
+                results.append('worker-start')
+                runtime_yield()
+                results.append('worker-end')
+
+            thread = DRTThread(target=worker)
+            thread.start()
+            results.append('main-end')
+
+        runtime = DRTRuntime(mode='record', log_path=self.log_path)
+        runtime.run(program)
+
+        self.assertEqual(results, ['worker-start', 'main-end', 'worker-end'])
+        self.assertTrue(runtime.log.is_complete)
+
+    def test_unjoined_worker_exception_still_fails_runtime(self):
+        """Runtime should surface worker failures even if user code forgets to join."""
+
+        def program():
+            def worker():
+                raise ValueError('boom')
+
+            thread = DRTThread(target=worker)
+            thread.start()
+
+        runtime = DRTRuntime(mode='record', log_path=self.log_path)
+
+        with self.assertRaisesRegex(ValueError, 'boom'):
+            runtime.run(program)
+
+    def test_deadlock_raises_instead_of_hanging(self):
+        """Blocked managed threads should raise DeadlockError."""
+
+        def program():
+            mutex = DRTMutex()
+            cond = DRTCondition(mutex)
+
+            def waiter():
+                with mutex:
+                    cond.wait()
+
+            thread = DRTThread(target=waiter)
+            thread.start()
+
+        runtime = DRTRuntime(mode='record', log_path=self.log_path)
+
+        with self.assertRaises(DeadlockError):
+            runtime.run(program)
+
+    def test_reentrant_mutex_acquire_is_rejected(self):
+        """Nested acquire on a non-reentrant mutex should fail loudly."""
+
+        def program():
+            mutex = DRTMutex()
+            mutex.acquire()
+            try:
+                mutex.acquire()
+            finally:
+                mutex.release()
+
+        runtime = DRTRuntime(mode='record', log_path=self.log_path)
+
+        with self.assertRaisesRegex(RuntimeError, 'Reentrant mutex acquisition'):
+            runtime.run(program)
+
+    def test_nonblocking_acquire_does_not_poison_mutex(self):
+        """Failed nonblocking acquire must not leave hidden waiter state behind."""
+        results = []
+
+        def program():
+            mutex = DRTMutex()
+
+            def holder():
+                mutex.acquire()
+                results.append('holder-acquired')
+                runtime_yield()
+                mutex.release()
+                results.append('holder-released')
+
+            thread = DRTThread(target=holder)
+            thread.start()
+
+            acquired = mutex.acquire(blocking=False)
+            results.append(f'main-{acquired}')
+
+            thread.join()
+
+            mutex.acquire()
+            results.append('main-acquired')
+            mutex.release()
+
+        runtime = DRTRuntime(mode='record', log_path=self.log_path)
+        runtime.run(program)
+
+        self.assertEqual(
+            results,
+            ['holder-acquired', 'main-False', 'holder-released', 'main-acquired'],
+        )
 
 
 class TestLogFormat(unittest.TestCase):
@@ -420,6 +575,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestCondition))
     suite.addTests(loader.loadTestsFromTestCase(TestInterceptors))
     suite.addTests(loader.loadTestsFromTestCase(TestDivergence))
+    suite.addTests(loader.loadTestsFromTestCase(TestPhaseOneHardening))
     suite.addTests(loader.loadTestsFromTestCase(TestLogFormat))
     suite.addTests(loader.loadTestsFromTestCase(TestSynchronizationPrimitives))
     
