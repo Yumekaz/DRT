@@ -20,11 +20,12 @@ import os
 from typing import Optional, Any, BinaryIO
 from pathlib import Path
 
+from .context import get_current_interceptor
 from .scheduler import Scheduler, RuntimeMode
 from .events import (
     EventType, LogEntry,
     serialize_float_payload, deserialize_float_payload,
-    serialize_io_payload, deserialize_io_payload
+    serialize_io_read_payload, deserialize_io_read_payload,
 )
 from .thread import get_current_thread_id
 from .exceptions import DivergenceError, UnloggedNondeterminismError
@@ -47,7 +48,6 @@ class NondeterminismInterceptor:
         """
         self._scheduler = scheduler
         self._log = scheduler.log
-        self._replay_index = 0
         
         # Seeded random generator for deterministic random numbers
         self._random_state = _random.Random()
@@ -227,6 +227,13 @@ class NondeterminismInterceptor:
         else:
             # Replay: use logged seed
             logged_seed = self._replay_float(EventType.RANDOM_SEED, thread_id)
+            if value is not None and int(logged_seed) != int(value):
+                raise DivergenceError(
+                    "Replay seed does not match recorded seed",
+                    self._scheduler.logical_time,
+                    f"seed={int(value)}",
+                    f"seed={int(logged_seed)}",
+                )
             self._random_state.seed(int(logged_seed))
             
         self._random_initialized = True
@@ -246,14 +253,15 @@ class NondeterminismInterceptor:
             File contents as bytes
         """
         thread_id = get_current_thread_id()
+        normalized_path = self._normalize_path(path)
         
         if self.mode == RuntimeMode.RECORD:
             with open(path, 'rb') as f:
                 data = f.read(size) if size >= 0 else f.read()
-            self._log_bytes(EventType.IO_READ, data, thread_id)
+            self._log_file_read(normalized_path, size, data, thread_id)
             return data
         else:
-            return self._replay_bytes(EventType.IO_READ, thread_id)
+            return self._replay_file_read(normalized_path, size, thread_id)
             
     def read_text_file(self, path: str, encoding: str = 'utf-8') -> str:
         """
@@ -287,45 +295,57 @@ class NondeterminismInterceptor:
             logical_time=self._scheduler.logical_time,
             thread_id=thread_id if thread_id >= 0 else 0,
             event_type=event_type,
-            payload=serialize_io_payload(data)
+            payload=data
+        )
+        self._log.append(entry)
+
+    def _log_file_read(self, path: str, size: int, data: bytes, thread_id: int):
+        """Log a file read with enough metadata to validate replay arguments."""
+        entry = LogEntry(
+            logical_time=self._scheduler.logical_time,
+            thread_id=thread_id if thread_id >= 0 else 0,
+            event_type=EventType.IO_READ,
+            payload=serialize_io_read_payload(path, size, data),
         )
         self._log.append(entry)
         
     def _replay_float(self, expected_type: EventType, thread_id: int) -> float:
         """Get float value from replay log."""
-        entry = self._get_replay_entry(expected_type, thread_id)
+        entry = self._scheduler.consume_replay_event(expected_type, thread_id)
         return deserialize_float_payload(entry.payload)
         
     def _replay_bytes(self, expected_type: EventType, thread_id: int) -> bytes:
         """Get bytes data from replay log."""
-        entry = self._get_replay_entry(expected_type, thread_id)
-        return deserialize_io_payload(entry.payload)
-        
-    def _get_replay_entry(self, expected_type: EventType, 
-                          thread_id: int) -> LogEntry:
-        """
-        Get the next replay entry of the expected type.
-        
-        Searches forward in the log for a matching entry.
-        
-        Raises:
-            DivergenceError: If expected entry not found
-        """
-        log_entries = list(self._log)
-        
-        # Search for next entry of this type
-        for i in range(self._replay_index, len(log_entries)):
-            entry = log_entries[i]
-            if entry.event_type == expected_type:
-                self._replay_index = i + 1
-                return entry
-                
-        raise DivergenceError(
-            f"Expected {expected_type.name} event not found in log",
-            self._scheduler.logical_time,
-            expected_type.name,
-            "end of log"
-        )
+        entry = self._scheduler.consume_replay_event(expected_type, thread_id)
+        _, _, data = deserialize_io_read_payload(entry.payload)
+        return data
+
+    def _replay_file_read(self, path: str, size: int, thread_id: int) -> bytes:
+        """Replay a file read, validating the recorded path and read size."""
+        entry = self._scheduler.consume_replay_event(EventType.IO_READ, thread_id)
+        logged_path, logged_size, data = deserialize_io_read_payload(entry.payload)
+
+        if logged_path and logged_path != path:
+            raise DivergenceError(
+                "Replay file path does not match recorded file read",
+                self._scheduler.logical_time,
+                f"path={path}",
+                f"path={logged_path}",
+            )
+
+        if logged_size != -1 and logged_size != size:
+            raise DivergenceError(
+                "Replay file size does not match recorded file read",
+                self._scheduler.logical_time,
+                f"size={size}",
+                f"size={logged_size}",
+            )
+
+        return data
+
+    def _normalize_path(self, path: str) -> str:
+        """Normalize file paths before recording or validating replay."""
+        return str(Path(path))
 
 
 # Module-level interceptor instance (set by runtime)
@@ -340,12 +360,13 @@ def set_interceptor(interceptor: NondeterminismInterceptor):
 
 def _get_interceptor() -> NondeterminismInterceptor:
     """Get the global interceptor, raising if not initialized."""
-    if _interceptor is None:
+    interceptor = get_current_interceptor() or _interceptor
+    if interceptor is None:
         raise RuntimeError(
             "Interceptor not initialized. "
             "Use drt.runtime.DRTRuntime to run your program."
         )
-    return _interceptor
+    return interceptor
 
 
 # Public API - drop-in replacements for standard library functions

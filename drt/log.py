@@ -219,6 +219,11 @@ class EventLog:
     def is_complete(self) -> bool:
         """Whether the log has a LOG_COMPLETE marker."""
         return self._is_complete
+
+    @property
+    def is_recording(self) -> bool:
+        """Whether the log is currently open for recording."""
+        return self._is_recording and self._file is not None
     
     def __iter__(self) -> Iterator[LogEntry]:
         """Iterate over all entries (excluding LOG_COMPLETE)."""

@@ -11,6 +11,7 @@ which thread runs after each acquire/release/wait/signal.
 import threading
 from typing import Optional, Callable
 
+from .context import get_current_scheduler
 from .scheduler import Scheduler
 from .thread import get_current_thread_id
 from .exceptions import RuntimeStateError
@@ -45,13 +46,13 @@ class DRTMutex:
             pass
     """
     
-    # Class-level scheduler reference
-    _scheduler: Optional[Scheduler] = None
+    # Legacy fallback for callers that still use the old global setter.
+    _default_scheduler: Optional[Scheduler] = None
     
     @classmethod
     def set_scheduler(cls, scheduler: Scheduler):
-        """Set the scheduler for all DRTMutex instances."""
-        cls._scheduler = scheduler
+        """Set a legacy fallback scheduler for DRTMutex instances."""
+        cls._default_scheduler = scheduler
         
     def __init__(self, name: str = None):
         """
@@ -60,6 +61,7 @@ class DRTMutex:
         Args:
             name: Optional name for debugging
         """
+        self._scheduler = get_current_scheduler() or self.__class__._default_scheduler
         self._id = _get_next_sync_id()
         self._name = name or f"Mutex-{self._id}"
         self._owner: Optional[int] = None
@@ -198,13 +200,13 @@ class DRTCondition:
             cond.signal()
     """
     
-    # Class-level scheduler reference
-    _scheduler: Optional[Scheduler] = None
+    # Legacy fallback for callers that still use the old global setter.
+    _default_scheduler: Optional[Scheduler] = None
     
     @classmethod
     def set_scheduler(cls, scheduler: Scheduler):
-        """Set the scheduler for all DRTCondition instances."""
-        cls._scheduler = scheduler
+        """Set a legacy fallback scheduler for DRTCondition instances."""
+        cls._default_scheduler = scheduler
         
     def __init__(self, lock: DRTMutex = None, name: str = None):
         """
@@ -214,6 +216,13 @@ class DRTCondition:
             lock: Associated mutex (created if not provided)
             name: Optional name for debugging
         """
+        bound_scheduler = get_current_scheduler() or self.__class__._default_scheduler
+        if lock is not None and getattr(lock, "_scheduler", None) is not None:
+            if bound_scheduler is not None and lock._scheduler is not bound_scheduler:
+                raise RuntimeError("Condition lock belongs to a different runtime")
+            bound_scheduler = lock._scheduler
+
+        self._scheduler = bound_scheduler
         self._id = _get_next_sync_id()
         self._name = name or f"Condition-{self._id}"
         self._lock = lock if lock is not None else DRTMutex()

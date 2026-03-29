@@ -11,8 +11,13 @@ deterministic execution.
 import threading
 import time
 from typing import Callable, Any, Optional, Tuple
-from functools import wraps
 
+from .context import (
+    bind_runtime_context,
+    capture_runtime_context,
+    clear_runtime_context,
+    get_current_scheduler,
+)
 from .scheduler import Scheduler, ThreadState
 from .exceptions import RuntimeStateError
 
@@ -36,6 +41,12 @@ def set_current_thread_id(thread_id: int):
     _thread_local.thread_id = thread_id
 
 
+def clear_current_thread_id():
+    """Clear the DRT thread ID for the current thread."""
+    if hasattr(_thread_local, 'thread_id'):
+        delattr(_thread_local, 'thread_id')
+
+
 class DRTThread:
     """
     A managed thread that integrates with the deterministic scheduler.
@@ -52,13 +63,13 @@ class DRTThread:
         t.join()
     """
     
-    # Class-level scheduler reference (set by runtime)
-    _scheduler: Optional[Scheduler] = None
+    # Legacy fallback for callers that still use the old global setter.
+    _default_scheduler: Optional[Scheduler] = None
     
     @classmethod
     def set_scheduler(cls, scheduler: Scheduler):
-        """Set the scheduler for all DRTThread instances."""
-        cls._scheduler = scheduler
+        """Set a legacy fallback scheduler for DRTThread instances."""
+        cls._default_scheduler = scheduler
         
     def __init__(self, target: Callable[..., Any] = None, 
                  args: Tuple = (), kwargs: dict = None,
@@ -73,11 +84,15 @@ class DRTThread:
             name: Thread name (optional)
             daemon: Whether thread is daemon (currently ignored)
         """
-        if self._scheduler is None:
+        scheduler = get_current_scheduler() or self._default_scheduler
+        if scheduler is None:
             raise RuntimeError(
                 "DRTThread.set_scheduler() must be called before creating threads"
             )
-            
+
+        self._scheduler = scheduler
+        self._runtime_context = capture_runtime_context()
+             
         self._target = target
         self._args = args
         self._kwargs = kwargs or {}
@@ -129,6 +144,8 @@ class DRTThread:
         
         Implements the thread execution loop with scheduler coordination.
         """
+        bind_runtime_context(*self._runtime_context)
+
         # Set thread-local ID
         set_current_thread_id(self._thread_id)
         
@@ -149,7 +166,9 @@ class DRTThread:
             self._exited = True
             self._scheduler.thread_exited(self._thread_id)
             self._exit_event.set()
-            
+            clear_current_thread_id()
+            clear_runtime_context()
+             
     def join(self, timeout: float = None):
         """
         Wait for the thread to complete.
@@ -159,30 +178,30 @@ class DRTThread:
         """
         if not self._started:
             raise RuntimeError("Thread not started")
-            
+             
         current_id = get_current_thread_id()
-        deadline = None if timeout is None else time.monotonic() + timeout
-        
-        # Keep yielding until the target thread exits
-        while not self._exited and self._scheduler.is_running:
-            if deadline is not None and time.monotonic() >= deadline:
-                return
+        if current_id >= 0:
+            if timeout is not None:
+                raise RuntimeError(
+                    "join(timeout=...) is not supported for managed DRT threads"
+                )
+            if current_id == self._thread_id:
+                raise RuntimeError("Thread cannot join itself")
 
-            if current_id >= 0:
+            while not self._scheduler.thread_join(current_id, self._thread_id):
                 self._scheduler.yield_control(current_id)
                 self._scheduler.request_run(current_id)
-            else:
-                # Not a managed thread, just wait
-                remaining = (
-                    0.01 if deadline is None
-                    else max(0.0, min(0.01, deadline - time.monotonic()))
-                )
-                self._native_thread.join(timeout=remaining)
+                self._scheduler.raise_pending_error()
+        else:
+            self._native_thread.join(timeout=timeout)
 
-        if not self._exited and not self._scheduler.is_running:
+            if timeout is not None and self._native_thread.is_alive():
+                return
+
+        if not self._exited:
             self._scheduler.raise_pending_error()
             raise RuntimeStateError(
-                f"Scheduler stopped before thread {self._thread_id} exited"
+                f"Thread {self._thread_id} did not reach EXITED state during join"
             )
 
         if self._exception is not None:
@@ -232,7 +251,7 @@ def runtime_yield():
     if thread_id < 0:
         return  # Not a managed thread
         
-    scheduler = DRTThread._scheduler
+    scheduler = get_current_scheduler() or DRTThread._default_scheduler
     if scheduler is None or not scheduler.is_running:
         return
         

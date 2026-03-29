@@ -22,9 +22,10 @@ from pathlib import Path
 from typing import Callable, Any, Optional
 from enum import Enum
 
+from .context import bind_runtime_context, clear_runtime_context
 from .scheduler import Scheduler, RuntimeMode
 from .log import EventLog
-from .thread import DRTThread, set_current_thread_id
+from .thread import DRTThread, clear_current_thread_id, set_current_thread_id
 from .sync import DRTMutex, DRTCondition
 from .intercept import NondeterminismInterceptor, set_interceptor
 from .exceptions import (
@@ -59,12 +60,6 @@ class DRTRuntime:
         self._log = EventLog(self._log_path)
         self._scheduler = Scheduler(self._mode, self._log)
         self._interceptor = NondeterminismInterceptor(self._scheduler)
-        
-        # Wire up components
-        DRTThread.set_scheduler(self._scheduler)
-        DRTMutex.set_scheduler(self._scheduler)
-        DRTCondition.set_scheduler(self._scheduler)
-        set_interceptor(self._interceptor)
         
         # Runtime state
         self._initialized = False
@@ -121,6 +116,7 @@ class DRTRuntime:
         # Register main thread
         set_current_thread_id(0)
         self._scheduler.register_main_thread()
+        bind_runtime_context(self._scheduler, self._interceptor)
         
         self._initialized = True
         
@@ -142,6 +138,8 @@ class DRTRuntime:
             self._scheduler.shutdown()
             self._join_native_threads()
 
+        clear_current_thread_id()
+        clear_runtime_context()
         self._log.close()
 
     def _wait_for_managed_threads(self):
