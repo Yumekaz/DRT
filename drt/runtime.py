@@ -269,7 +269,7 @@ def run_replay(target: Callable, log_path: str = 'execution.log',
         if verbose:
             print(f"\n=== Replay Complete ===")
             print(f"Log file: {log_path}")
-            print(f"Execution matched recording exactly")
+            print("Replay stayed consistent with the recorded execution")
             
         return result
         

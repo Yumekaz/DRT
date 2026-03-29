@@ -2,8 +2,8 @@
 
 ## Complete API Documentation
 
-**Version:** 1.0.0  
-**Python:** 3.8+
+**Version:** 0.3.0  
+**Python:** 3.9+
 
 ---
 
@@ -902,7 +902,7 @@ def buggy_counter():
 runtime = DRTRuntime(mode='record', log_path='race.log')
 runtime.run(buggy_counter)
 
-# Replay reproduces the bug exactly
+# Replay follows the recorded DRT execution
 runtime = DRTRuntime(mode='replay', log_path='race.log')
 runtime.run(buggy_counter)
 ```

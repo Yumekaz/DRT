@@ -10,7 +10,7 @@ In RECORD mode:
     - All decisions are logged
     
 In REPLAY mode:
-    - Scheduler follows the log exactly
+    - Scheduler follows the recorded log event sequence
     - Any divergence is detected and reported
 """
 

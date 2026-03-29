@@ -2,9 +2,9 @@
 
 ## Formal Specification of the Deterministic Record-and-Replay Runtime
 
-**Version:** 1.0.0  
-**Status:** Normative  
-**Last Updated:** December 2024
+**Version:** 0.3.0  
+**Status:** Draft  
+**Last Updated:** March 29, 2026
 
 ---
 
@@ -390,11 +390,12 @@ Where `≡` denotes equivalence of:
 An implementation conforms to this specification iff:
 
 1. All mandatory components are implemented
-2. Log format matches exactly
+2. Log format version and structure match this specification
 3. Scheduling algorithms match
 4. Divergence detection is immediate
 5. No nondeterminism escapes interception
-6. Replay of valid log produces identical output
+6. Replay of a valid log either stays consistent with the recorded DRT-managed
+   execution or raises divergence
 
 ### 10.1 Conformance Testing
 

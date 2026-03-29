@@ -7,9 +7,9 @@ The Problem:
     Concurrency bugs are nondeterministic. They appear once in 1000 runs,
     and disappear when you add logging or attach a debugger.
 
-The Solution:
-    DRT records the exact thread schedule and all nondeterministic inputs.
-    Replay follows the log exactly, reproducing the bug every time.
+    The Solution:
+        DRT records scheduler decisions and supported nondeterministic inputs
+        for DRT-managed code, then replays that recorded execution.
 
 Quick Start:
     from drt import DRTRuntime, DRTThread, DRTMutex
@@ -34,21 +34,21 @@ Quick Start:
     runtime = DRTRuntime(mode='record', log_path='execution.log')
     recorded_results = runtime.run(my_program)
     
-    # Replay execution - produces identical results
+    # Replay execution
     runtime = DRTRuntime(mode='replay', log_path='execution.log')
     replayed_results = runtime.run(my_program)
-    
-    assert recorded_results == replayed_results  # Always true
+ 
+    assert recorded_results == replayed_results
 
-Core Guarantee:
-    Given the same initial state and a complete execution log, replayed
-    execution produces the same thread schedule, synchronization order,
-    nondeterministic inputs, and program outputs.
+    Core Guarantee:
+        Given the same initial state and a complete execution log, replayed
+        execution follows the same recorded behavior within the supported
+        DRT-managed API surface, or raises DivergenceError.
 
 See DESIGN.md for architectural decisions and tradeoffs.
 """
 
-__version__ = '1.0.0'
+__version__ = '0.3.0'
 
 # Core runtime
 from .runtime import (

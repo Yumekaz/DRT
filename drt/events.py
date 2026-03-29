@@ -47,8 +47,9 @@ class EventType(IntEnum):
 HEADER_FORMAT = '<QIhH'  # Little-endian: uint64, uint32, int16, uint16
 HEADER_SIZE = struct.calcsize(HEADER_FORMAT)  # 16 bytes
 
-# Magic bytes to identify DRT log files
-LOG_MAGIC = b'DRTLOG01'
+# Log format version and magic header.
+LOG_FORMAT_VERSION = 1
+LOG_MAGIC = f'DRTLOG{LOG_FORMAT_VERSION:02d}'.encode('ascii')
 LOG_MAGIC_SIZE = 8
 
 

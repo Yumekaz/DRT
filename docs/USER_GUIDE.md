@@ -2,7 +2,7 @@
 
 ## A Practical Guide to Deterministic Record-and-Replay
 
-**Version:** 1.0.0
+**Version:** 0.3.0
 
 ---
 
@@ -26,13 +26,13 @@
 
 ### What is DRT?
 
-DRT (Deterministic Record-and-Replay Runtime) is a Python library that lets you **record** a program's execution and **replay** it exactly—same thread scheduling, same random numbers, same timestamps, same everything.
+DRT (Deterministic Record-and-Replay Runtime) is a Python library that lets you record and replay executions of code that uses the DRT API. In supported code paths, DRT records scheduler decisions and selected nondeterministic inputs, then replays that execution and raises `DivergenceError` if behavior drifts.
 
 ### Why Use DRT?
 
 **Problem:** Concurrency bugs are hard to debug because they're nondeterministic. A race condition might occur once in a thousand runs, and disappear when you add logging.
 
-**Solution:** DRT captures the exact execution that triggered the bug, letting you replay it infinitely until you understand and fix it.
+**Solution:** DRT captures a failing DRT-managed execution so you can replay that same trace until you understand and fix it.
 
 ### What Can DRT Do?
 
@@ -69,7 +69,7 @@ print("DRT installed successfully!")
 
 ### Requirements
 
-- Python 3.8 or later
+- Python 3.9 or later
 - No external dependencies
 
 ---
@@ -564,7 +564,7 @@ if os.path.exists(log_path):
 
 ### Q: Can I edit the log file?
 
-**A:** No. The log has strict checksums. Any modification will cause replay to fail or produce incorrect results.
+**A:** Treat the log as an internal artifact, not a file you should hand-edit. DRT validates the log structure and event sequence, but it does not currently implement tamper-proof checksums. If you modify the log, replay may fail with a parse error or divergence.
 
 ### Q: Can I replay on a different machine?
 
@@ -597,10 +597,10 @@ DRT's explicit API makes nondeterminism visible and reliable.
 from drt import DRTRuntime
 
 def test_determinism():
-    runtime = DRTRuntime(mode='record', log_path='/tmp/test.log')
+    runtime = DRTRuntime(mode='record', log_path='test.log')
     result1 = runtime.run(my_function)
     
-    runtime = DRTRuntime(mode='replay', log_path='/tmp/test.log')
+    runtime = DRTRuntime(mode='replay', log_path='test.log')
     result2 = runtime.run(my_function)
     
     assert result1 == result2

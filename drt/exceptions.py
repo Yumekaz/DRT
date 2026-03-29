@@ -14,8 +14,8 @@ class DivergenceError(DRTError):
     """
     Raised when replay execution diverges from recorded execution.
     
-    This indicates that the replayed execution cannot match the recorded
-    execution - the system guarantee has been violated.
+    This indicates that the runtime could not continue replay while staying
+    consistent with the recorded execution.
     """
     def __init__(self, message: str, logical_time: int = -1, 
                  expected: str = "", actual: str = ""):

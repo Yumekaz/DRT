@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Demo: Bank Transfer Race Condition
+Demo: Bank transfer race condition.
 
 This demo shows a classic concurrency bug: a race condition in bank transfers
 that can cause money to be created or destroyed.
 
-The Bug:
+The bug:
     Two threads simultaneously transfer money between accounts.
     Without proper locking, the read-modify-write operations can interleave,
     causing incorrect final balances.
@@ -14,22 +14,30 @@ Expected:
     With correct locking: total money is conserved
     With the bug: total money may change (money created or destroyed)
 
-This demo proves:
-    1. The bug occurs rarely under normal execution (nondeterministic)
-    2. With DRT recording, we capture a buggy execution
-    3. With DRT replay, the bug reproduces 100% of the time
+This demo shows:
+    1. Fresh executions can expose the bug depending on scheduling
+    2. DRT can record one buggy execution
+    3. DRT can replay that recorded execution and detect divergence
 """
 
 import sys
 import os
+import tempfile
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from drt import (
     DRTRuntime, DRTThread, DRTMutex,
-    runtime_yield, drt_random, drt_time
+    runtime_yield
 )
+
+
+def make_temp_log_path() -> str:
+    """Create a cross-platform temporary log path."""
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.log')
+    temp_file.close()
+    return temp_file.name
 
 
 class BuggyBankAccount:
@@ -157,7 +165,10 @@ def run_buggy_demo():
     final_total = alice.balance + bob.balance
     print(f"\nFinal balances: Alice=${alice.balance}, Bob=${bob.balance}")
     print(f"Final total: ${final_total}")
-    print(f"Transfers completed: Alice→Bob={transfer_count[0]}, Bob→Alice={transfer_count[1]}")
+    print(
+        f"Transfers completed: Alice->Bob={transfer_count[0]}, "
+        f"Bob->Alice={transfer_count[1]}"
+    )
     
     if abs(final_total - initial_total) > 0.01:
         print(f"\n*** BUG DETECTED! ***")
@@ -217,7 +228,10 @@ def run_correct_demo():
     final_total = alice.balance + bob.balance
     print(f"\nFinal balances: Alice=${alice.balance}, Bob=${bob.balance}")
     print(f"Final total: ${final_total}")
-    print(f"Transfers: Alice→Bob={transfer_count[0]}, Bob→Alice={transfer_count[1]}")
+    print(
+        f"Transfers: Alice->Bob={transfer_count[0]}, "
+        f"Bob->Alice={transfer_count[1]}"
+    )
     
     if abs(final_total - initial_total) > 0.01:
         print(f"\n*** UNEXPECTED BUG! ***")
@@ -246,17 +260,15 @@ def main():
     demo_func = run_buggy_demo if args.variant == 'buggy' else run_correct_demo
     
     if args.mode == 'normal':
-        # Run without DRT to show nondeterministic behavior
-        print("\nRunning WITHOUT deterministic runtime...")
-        print("(Bug may or may not appear depending on thread scheduling)\n")
+        print("\nRunning fresh DRT-managed executions without replay...")
+        print("(The bug may or may not appear depending on scheduling.)\n")
         
         bug_count = 0
         for i in range(args.iterations):
             if args.iterations > 1:
                 print(f"\n--- Iteration {i+1}/{args.iterations} ---")
             
-            # Create a minimal runtime just to initialize the primitives
-            runtime = DRTRuntime(mode='record', log_path='/tmp/throwaway.log')
+            runtime = DRTRuntime(mode='record', log_path=make_temp_log_path())
             try:
                 bug_occurred = runtime.run(demo_func)
                 if bug_occurred:
@@ -271,7 +283,7 @@ def main():
                   
     elif args.mode == 'record':
         print(f"\nRecording execution to {args.log}...")
-        print("(This will capture the exact thread interleaving)\n")
+        print("(This captures one DRT-managed execution trace.)\n")
         
         runtime = DRTRuntime(mode='record', log_path=args.log)
         try:
@@ -287,15 +299,15 @@ def main():
             
     elif args.mode == 'replay':
         print(f"\nReplaying execution from {args.log}...")
-        print("(This will reproduce the exact same behavior)\n")
+        print("(This reuses the recorded DRT trace and checks for divergence.)\n")
         
         runtime = DRTRuntime(mode='replay', log_path=args.log)
         try:
             bug_occurred = runtime.run(demo_func)
             print(f"\nReplay complete!")
-            print("Execution matched recording exactly.")
+            print("Replay stayed consistent with the recorded execution.")
             if bug_occurred:
-                print("Bug reproduced successfully!")
+                print("Bug reappeared from the recorded trace.")
         except Exception as e:
             print(f"Replay failed: {e}")
             raise

@@ -2,9 +2,9 @@
 
 ## Deterministic Record-and-Replay Runtime for Python
 
-**Version:** 1.0.0  
-**Status:** Production Ready  
-**Last Updated:** December 2024
+**Version:** 0.3.0  
+**Status:** Experimental Prototype  
+**Last Updated:** March 29, 2026
 
 ---
 
@@ -29,18 +29,18 @@
 
 ## 1. Executive Summary
 
-DRT (Deterministic Record-and-Replay Runtime) is a user-space runtime system that enables deterministic reproduction of concurrent program executions in Python. It solves the fundamental problem of debugging concurrency bugs—their nondeterministic nature—by recording all sources of nondeterminism during execution and enforcing the exact same execution order during replay.
+DRT (Deterministic Record-and-Replay Runtime) is a user-space runtime system for reproducing concurrent executions in Python code that stays inside the DRT-managed API surface. It addresses the debugging problem of nondeterministic concurrency by recording scheduler decisions and supported nondeterministic inputs, then replaying that recorded execution while checking for divergence.
 
 ### Core Capability
 
 ```
-Record → Capture exact execution (thread schedule, random values, timestamps)
-Replay → Reproduce identical behavior, guaranteed
+Record → Capture a DRT-managed execution trace (thread schedule, random values, timestamps)
+Replay → Re-run the same supported trace or fail with DivergenceError
 ```
 
 ### Key Guarantee
 
-> Given the same initial state and a complete execution log, replayed execution produces **identical observable behavior**: same thread schedule, same synchronization order, same nondeterministic inputs, same outputs, same termination.
+> Given the same initial state, the same program code, and a complete execution log, replay is intended to reproduce the same behavior within DRT's supported API surface. If the replayed execution drifts, DRT should raise `DivergenceError` instead of silently continuing.
 
 ---
 
@@ -567,7 +567,7 @@ class NondeterminismInterceptor:
 
 ### 10.3 Schedule Replay
 
-The scheduler follows the log exactly:
+The scheduler follows the next recorded schedule entry:
 
 ```python
 def _schedule_next_replay():
@@ -684,7 +684,8 @@ class DivergenceError(DRTError):
 3. **Debuggability:** Clear stack traces
 4. **Completeness:** User knows exactly what's intercepted
 
-**Trade-off:** More work for user, but guaranteed correctness.
+**Trade-off:** More work for user, but stronger guarantees inside the
+supported API surface.
 
 ### 14.2 Why Synchronous Logging?
 

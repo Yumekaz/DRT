@@ -18,14 +18,10 @@ from typing import Iterator, Optional, List
 from threading import Lock
 
 from .events import (
-    LogEntry, EventType, HEADER_SIZE, HEADER_FORMAT
+    LogEntry, EventType, HEADER_SIZE, HEADER_FORMAT,
+    LOG_FORMAT_VERSION, LOG_MAGIC, LOG_MAGIC_SIZE,
 )
 from .exceptions import LogCorruptionError, IncompleteLogError
-
-
-# Magic bytes to identify DRT log files
-LOG_MAGIC = b'DRTLOG01'
-LOG_MAGIC_SIZE = 8
 
 
 class EventLog:
@@ -224,6 +220,11 @@ class EventLog:
     def is_recording(self) -> bool:
         """Whether the log is currently open for recording."""
         return self._is_recording and self._file is not None
+
+    @property
+    def format_version(self) -> int:
+        """Binary log format version."""
+        return LOG_FORMAT_VERSION
     
     def __iter__(self) -> Iterator[LogEntry]:
         """Iterate over all entries (excluding LOG_COMPLETE)."""
@@ -241,7 +242,12 @@ class EventLog:
         
         Useful for debugging.
         """
-        lines = [f"DRT Log: {self.filepath}", f"Entries: {len(self._entries)}", ""]
+        lines = [
+            f"DRT Log: {self.filepath}",
+            f"Format version: {self.format_version}",
+            f"Entries: {len(self._entries)}",
+            "",
+        ]
         
         for i, entry in enumerate(self._entries):
             payload_str = ""

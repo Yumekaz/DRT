@@ -1,34 +1,42 @@
 #!/usr/bin/env python3
 """
-Demo: Producer-Consumer Lost Wakeup Bug
+Demo: producer-consumer lost wakeup bug.
 
 This demo shows another classic concurrency bug: the "lost wakeup" problem
 in producer-consumer implementations.
 
-The Bug:
+The bug:
     A producer signals a condition variable before the consumer starts waiting.
     The signal is "lost" and the consumer waits forever (deadlock).
 
 This is particularly nasty because:
-    1. It depends on exact thread scheduling order
+    1. It depends on thread scheduling order
     2. Adding printf/logging changes timing and hides the bug
     3. It causes deadlock, which is hard to debug
-    
+
 With DRT:
     1. Record an execution where the bug occurs
-    2. Replay reproduces the deadlock 100% of the time
-    3. The exact interleaving is captured in the log
+    2. Replay can drive that same recorded deadlock trace again
+    3. The relevant DRT-managed interleaving is captured in the log
 """
 
 import sys
 import os
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from drt import (
     DRTRuntime, DRTThread, DRTMutex, DRTCondition,
-    runtime_yield, drt_time
+    runtime_yield
 )
+
+
+def make_temp_log_path() -> str:
+    """Create a cross-platform temporary log path."""
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.log')
+    temp_file.close()
+    return temp_file.name
 
 
 class BuggyQueue:
@@ -221,7 +229,8 @@ def main():
     demo_func = run_buggy_demo if args.variant == 'buggy' else run_correct_demo
     
     if args.mode == 'normal':
-        runtime = DRTRuntime(mode='record', log_path='/tmp/throwaway.log')
+        print("\nRunning a fresh DRT-managed execution without replay...\n")
+        runtime = DRTRuntime(mode='record', log_path=make_temp_log_path())
         runtime.run(demo_func)
         
     elif args.mode == 'record':
@@ -238,7 +247,7 @@ def main():
         bug_occurred = runtime.run(demo_func)
         print(f"\nReplay complete")
         if bug_occurred:
-            print("Bug reproduced!")
+            print("Bug reappeared from the recorded trace.")
 
 
 if __name__ == '__main__':
