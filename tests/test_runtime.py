@@ -13,6 +13,7 @@ Tests verify:
 
 import sys
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -22,8 +23,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from drt import (
     DRTRuntime, DRTThread, DRTMutex, DRTCondition, DRTSemaphore, DRTBarrier,
     runtime_yield, drt_time, drt_random, drt_randint, drt_seed, drt_read_file,
-    DeadlockError, DivergenceError, IncompleteLogError, EventType
+    DeadlockError, DivergenceError, IncompleteLogError, LogIntegrityError, EventType
 )
+from drt.events import HEADER_SIZE, LOG_MAGIC_SIZE, LogEntry
+from drt.log import EventLog
 
 
 class TestBasicRuntime(unittest.TestCase):
@@ -636,6 +639,79 @@ class TestLogFormat(unittest.TestCase):
         # Verify we can dump the log
         dump = runtime.log.dump_readable()
         self.assertIn('LOG_COMPLETE', dump)
+        self.assertIn('Integrity: verified', dump)
+
+    def test_replay_rejects_checksum_mismatch(self):
+        """Checksum-backed logs should fail replay if the body was altered."""
+
+        def program():
+            drt_random()
+
+        runtime = DRTRuntime(mode='record', log_path=self.log_path)
+        runtime.run(program)
+
+        with open(self.log_path, 'rb') as f:
+            data = bytearray(f.read())
+
+        payload_offset = LOG_MAGIC_SIZE + HEADER_SIZE
+        data[payload_offset] ^= 0x01
+
+        with open(self.log_path, 'wb') as f:
+            f.write(data)
+
+        runtime = DRTRuntime(mode='replay', log_path=self.log_path)
+        with self.assertRaises(LogIntegrityError):
+            runtime.run(program)
+
+    def test_legacy_v1_log_still_opens(self):
+        """Replay should continue to accept legacy v1 logs without integrity metadata."""
+        with open(self.log_path, 'wb') as f:
+            f.write(b'DRTLOG01')
+            f.write(
+                LogEntry(
+                    logical_time=0,
+                    thread_id=0,
+                    event_type=EventType.LOG_COMPLETE,
+                    payload=b'',
+                ).serialize()
+            )
+
+        log = EventLog(Path(self.log_path))
+        log.open_for_replay()
+
+        self.assertEqual(log.format_version, 1)
+        self.assertFalse(log.integrity_available)
+        self.assertTrue(log.is_complete)
+
+    def test_module_cli_info_and_verify(self):
+        """The module CLI should report log metadata and verification status."""
+
+        runtime = DRTRuntime(mode='record', log_path=self.log_path)
+        runtime.run(lambda: drt_random())
+
+        repo_root = Path(__file__).resolve().parents[1]
+
+        info_result = subprocess.run(
+            [sys.executable, '-m', 'drt', 'info', self.log_path],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(info_result.returncode, 0, info_result.stderr)
+        self.assertIn('Format version: 2', info_result.stdout)
+        self.assertIn('Integrity: verified', info_result.stdout)
+        self.assertIn('CRC32: 0x', info_result.stdout)
+
+        verify_result = subprocess.run(
+            [sys.executable, '-m', 'drt', 'verify', self.log_path],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(verify_result.returncode, 0, verify_result.stderr)
+        self.assertIn('Status: ok', verify_result.stdout)
 
 
 class TestSynchronizationPrimitives(unittest.TestCase):

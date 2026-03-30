@@ -2,7 +2,7 @@
 
 ## Formal Specification of the Deterministic Record-and-Replay Runtime
 
-**Version:** 0.3.0  
+**Version:** 0.4.0  
 **Status:** Draft  
 **Last Updated:** March 29, 2026
 
@@ -125,7 +125,7 @@ Between consecutive yield points, execution is atomic:
 
 ```
 Log := Magic || Entry* || CompleteMarker
-Magic := "DRTLOG01" (8 bytes, ASCII)
+Magic := "DRTLOG02" (8 bytes, ASCII) for the current format
 Entry := Header || Payload
 CompleteMarker := Entry with type = LOG_COMPLETE
 ```
@@ -154,14 +154,15 @@ Total: 16 bytes, little-endian.
 | 40 | IO_READ | data: bytes |
 | 50 | THREAD_CREATE | new_thread_id: uint32 |
 | 51 | THREAD_EXIT | ∅ |
-| 52 | THREAD_JOIN | ∅ |
-| 100 | LOG_COMPLETE | ∅ |
+| 52 | THREAD_JOIN | target_thread_id: uint32, completed_immediately: uint8 |
+| 100 | LOG_COMPLETE | entry_count: uint64, body_crc32: uint32 |
 
 ### 4.4 Log Validity
 
 A log `L` is valid iff:
 
-1. **Magic Check:** `L[0:8] = "DRTLOG01"`
+1. **Magic Check:** `L[0:8] = "DRTLOG02"` for the current format
+   Legacy compatibility: `DRTLOG01` remains replayable as a structure-only format
 2. **Parseable:** All entries parse correctly
 3. **Complete:** Last entry has type `LOG_COMPLETE`
 4. **Monotonic:** Logical times are non-decreasing
@@ -430,6 +431,7 @@ Minimum test cases:
 Offset  Content
 ------  -------
 0x0000  44 52 54 4C 4F 47 30 31  "DRTLOG01"
+... current-format logs use "DRTLOG02" and end with LOG_COMPLETE checksum metadata
 0x0008  00 00 00 00 00 00 00 00  logical_time = 0
 0x0010  00 00 00 00              thread_id = 0
 0x0014  32 00                    event_type = 50 (THREAD_CREATE)

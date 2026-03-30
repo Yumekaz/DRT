@@ -12,8 +12,9 @@ long_description = readme_path.read_text(encoding='utf-8') if readme_path.exists
 
 setup(
     name='drt',
-    version='0.3.0',
+    version='0.4.0',
     author='Yumekaz',
+    license='MIT',
     description='Deterministic record-and-replay runtime for DRT-instrumented Python concurrency code',
     long_description=long_description,
     long_description_content_type='text/markdown',
@@ -29,7 +30,6 @@ setup(
         'Intended Audience :: Developers',
         'Topic :: Software Development :: Debuggers',
         'Topic :: Software Development :: Testing',
-        'License :: OSI Approved :: MIT License',
         'Programming Language :: Python :: 3',
         'Programming Language :: Python :: 3.9',
         'Programming Language :: Python :: 3.10',
@@ -41,7 +41,9 @@ setup(
     install_requires=[],
     extras_require={
         'dev': [
+            'build>=1.2',
             'mypy>=1.0',
+            'twine>=5.0',
         ],
     },
     entry_points={

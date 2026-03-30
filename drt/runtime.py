@@ -308,9 +308,15 @@ def dump_log(log_path: str) -> str:
 def main():
     """Command-line interface for DRT utilities."""
     import argparse
+    from . import __version__
     
     parser = argparse.ArgumentParser(
         description='Deterministic Record-and-Replay Runtime'
+    )
+    parser.add_argument(
+        '--version',
+        action='version',
+        version=f'%(prog)s {__version__}',
     )
     subparsers = parser.add_subparsers(dest='command', help='Commands')
     
@@ -321,6 +327,10 @@ def main():
     # info command
     info_parser = subparsers.add_parser('info', help='Show log information')
     info_parser.add_argument('log_file', help='Log file to inspect')
+
+    # verify command
+    verify_parser = subparsers.add_parser('verify', help='Verify log structure and integrity')
+    verify_parser.add_argument('log_file', help='Log file to verify')
     
     args = parser.parse_args()
     
@@ -337,9 +347,31 @@ def main():
             log.open_for_replay()
             print(f"Log file: {args.log_file}")
             print(f"Entries: {len(log)}")
+            print(f"Format version: {log.format_version}")
             print(f"Complete: {log.is_complete}")
+            if log.integrity_available:
+                print(f"Integrity: verified")
+                print(f"CRC32: 0x{log.body_checksum:08x}")
+            else:
+                print("Integrity: unavailable (legacy log format)")
         except Exception as e:
             print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    elif args.command == 'verify':
+        try:
+            log = EventLog(Path(args.log_file))
+            log.open_for_replay()
+            print(f"Verified: {args.log_file}")
+            print(f"Format version: {log.format_version}")
+            print(f"Entries: {len(log)}")
+            if log.integrity_available:
+                print(f"CRC32: 0x{log.body_checksum:08x}")
+            else:
+                print("CRC32: unavailable (legacy log format)")
+            print("Status: ok")
+        except Exception as e:
+            print(f"Verification failed: {e}", file=sys.stderr)
             sys.exit(1)
             
     else:

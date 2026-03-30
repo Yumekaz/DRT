@@ -26,10 +26,46 @@ jobs:
         run: python -m pip install --upgrade pip
 
       - name: Install package
-        run: python -m pip install -e .
+        run: python -m pip install -e .[dev]
 
       - name: Run direct regression suite
         run: python tests/test_runtime.py
 
       - name: Run unittest discovery
         run: python -m unittest discover -v
+
+  package:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Install package and dev tooling
+        run: python -m pip install -e .[dev]
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Check built metadata
+        run: python -m twine check dist/*
+
+      - name: Install built wheel
+        run: python -m pip install dist/*.whl
+
+      - name: Smoke-test CLI entry point
+        run: drt --help
+
+      - name: Create and verify a smoke log
+        run: |
+          python -c "from drt import DRTRuntime; DRTRuntime(mode='record', log_path='smoke.log').run(lambda: None)"
+          drt info smoke.log
+          drt verify smoke.log

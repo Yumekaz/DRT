@@ -2,7 +2,7 @@
 
 ## A Practical Guide to Deterministic Record-and-Replay
 
-**Version:** 0.3.0
+**Version:** 0.4.0  
 
 ---
 
@@ -564,7 +564,7 @@ if os.path.exists(log_path):
 
 ### Q: Can I edit the log file?
 
-**A:** Treat the log as an internal artifact, not a file you should hand-edit. DRT validates the log structure and event sequence, but it does not currently implement tamper-proof checksums. If you modify the log, replay may fail with a parse error or divergence.
+**A:** Treat the log as an internal artifact, not a file you should hand-edit. Current logs carry format-versioned completion metadata with an entry count and CRC32 over the serialized event body, so accidental corruption or casual edits should be detected during replay or `drt verify`. That is an integrity check, not tamper-proof cryptographic signing.
 
 ### Q: Can I replay on a different machine?
 

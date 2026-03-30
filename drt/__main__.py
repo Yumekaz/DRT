@@ -1,12 +1,7 @@
-"""
-DRT Command Line Interface
-
-Usage:
-    python -m drt dump <log_file>    Dump log contents
-    python -m drt info <log_file>    Show log information
-"""
+"""Module entry point for ``python -m drt``."""
 
 from .runtime import main
+
 
 if __name__ == '__main__':
     main()

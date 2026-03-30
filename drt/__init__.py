@@ -48,7 +48,7 @@ Quick Start:
 See DESIGN.md for architectural decisions and tradeoffs.
 """
 
-__version__ = '0.3.0'
+__version__ = '0.4.0'
 
 # Core runtime
 from .runtime import (
@@ -95,6 +95,7 @@ from .exceptions import (
     DeadlockError,
     DivergenceError,
     LogCorruptionError,
+    LogIntegrityError,
     IncompleteLogError,
     RuntimeStateError,
     ThreadStateError,
@@ -147,6 +148,7 @@ __all__ = [
     'DeadlockError',
     'DivergenceError',
     'LogCorruptionError',
+    'LogIntegrityError',
     'IncompleteLogError',
     'RuntimeStateError',
     'ThreadStateError',

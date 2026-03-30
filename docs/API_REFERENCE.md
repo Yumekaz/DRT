@@ -2,7 +2,7 @@
 
 ## Complete API Documentation
 
-**Version:** 0.3.0  
+**Version:** 0.4.0  
 **Python:** 3.9+
 
 ---
@@ -54,7 +54,7 @@ def my_program():
 runtime = DRTRuntime(mode='record', log_path='exec.log')
 runtime.run(my_program)
 
-# Replay (identical output!)
+# Replay (same recorded outcome or DivergenceError)
 runtime = DRTRuntime(mode='replay', log_path='exec.log')
 runtime.run(my_program)
 ```
@@ -187,7 +187,9 @@ print(dump_log('exec.log'))
 **Output:**
 ```
 DRT Log: exec.log
+Format version: 2
 Entries: 25
+Integrity: verified (crc32=0x1234abcd)
 
 [   0] t=   0 thread= 0 THREAD_CREATE new_thread=1
 [   1] t=   0 thread= 1 SCHEDULE
@@ -676,6 +678,13 @@ except DivergenceError as e:
 ### class `LogCorruptionError`
 
 Raised when the event log is corrupted.
+
+---
+
+### class `LogIntegrityError`
+
+Raised when checksum-backed log integrity metadata does not match the recorded
+event body (subclass of `LogCorruptionError`).
 
 ---
 

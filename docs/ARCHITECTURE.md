@@ -2,7 +2,7 @@
 
 ## Deterministic Record-and-Replay Runtime for Python
 
-**Version:** 0.3.0  
+**Version:** 0.4.0  
 **Status:** Experimental Prototype  
 **Last Updated:** March 29, 2026
 
@@ -302,7 +302,7 @@ Persistent, append-only execution record.
 - Binary format for efficiency
 - Append-only during recording
 - Flushed and fsynced after each write
-- LOG_COMPLETE marker for integrity
+- LOG_COMPLETE marker plus entry-count / CRC32 payload for current-format integrity checks
 
 **Operations:**
 ```python
@@ -311,7 +311,7 @@ class EventLog:
     def open_for_replay()   # Load and validate existing log
     def append(entry)       # Add entry (record mode)
     def get_entry(index)    # Read entry (replay mode)
-    def finalize()          # Write LOG_COMPLETE marker
+    def finalize()          # Write LOG_COMPLETE marker with integrity metadata
 ```
 
 ---
@@ -475,7 +475,7 @@ def schedule_next_replay():
 
 ```
 ┌─────────────────────────────────────────────┐
-│  Magic: "DRTLOG01" (8 bytes)                │
+│  Magic: "DRTLOG02" (8 bytes)                │
 ├─────────────────────────────────────────────┤
 │  Entry 0: [header][payload]                 │
 ├─────────────────────────────────────────────┤
@@ -483,7 +483,7 @@ def schedule_next_replay():
 ├─────────────────────────────────────────────┤
 │  ...                                        │
 ├─────────────────────────────────────────────┤
-│  Entry N: LOG_COMPLETE (no payload)         │
+│  Entry N: LOG_COMPLETE [entry_count][crc32] │
 └─────────────────────────────────────────────┘
 ```
 
@@ -514,8 +514,8 @@ def schedule_next_replay():
 | 40 | IO_READ | data: bytes |
 | 50 | THREAD_CREATE | new_thread_id: uint32 |
 | 51 | THREAD_EXIT | (none) |
-| 52 | THREAD_JOIN | (none) |
-| 100 | LOG_COMPLETE | (none) |
+| 52 | THREAD_JOIN | target_thread_id: uint32, completed_immediately: uint8 |
+| 100 | LOG_COMPLETE | entry_count: uint64, body_crc32: uint32 |
 
 ### 9.4 Integrity Guarantees
 
@@ -536,7 +536,7 @@ def open_for_replay():
     data = file.read()
     
     # 2. Verify magic
-    assert data[:8] == b'DRTLOG01'
+    assert data[:8] in (b'DRTLOG01', b'DRTLOG02')
     
     # 3. Parse all entries
     entries = parse_entries(data[8:])

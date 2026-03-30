@@ -54,6 +54,18 @@ That narrow scope is intentional. It keeps the system understandable, testable, 
 pip install -e .
 ```
 
+### 1b. Inspect and verify a recorded log
+
+```bash
+drt info bug.log
+drt verify bug.log
+drt dump bug.log
+```
+
+`drt verify` checks that the log parses cleanly, ends with `LOG_COMPLETE`,
+and, for current logs, that the recorded CRC32 matches the serialized event
+body. That is integrity checking, not cryptographic authenticity.
+
 ### 2. Record a buggy execution
 
 ```python
@@ -185,6 +197,7 @@ python -m unittest discover -v
 ```
 
 The main regression suite lives in [tests/test_runtime.py](tests/test_runtime.py).
+Contributor workflow and build/release checks live in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Interactive Tour
 
@@ -197,6 +210,7 @@ The main regression suite lives in [tests/test_runtime.py](tests/test_runtime.py
 - condition wake ordering within the recorded trace
 - file-read path and requested size
 - replay completeness at the end of execution
+- checksum-backed log completion metadata for current log format
 
 </details>
 

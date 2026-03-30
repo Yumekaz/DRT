@@ -48,9 +48,36 @@ HEADER_FORMAT = '<QIhH'  # Little-endian: uint64, uint32, int16, uint16
 HEADER_SIZE = struct.calcsize(HEADER_FORMAT)  # 16 bytes
 
 # Log format version and magic header.
-LOG_FORMAT_VERSION = 1
-LOG_MAGIC = f'DRTLOG{LOG_FORMAT_VERSION:02d}'.encode('ascii')
+LOG_FORMAT_VERSION = 2
+LOG_MAGIC_PREFIX = b'DRTLOG'
+SUPPORTED_LOG_FORMAT_VERSIONS = (1, 2)
+LOG_MAGIC = f'{LOG_MAGIC_PREFIX.decode("ascii")}{LOG_FORMAT_VERSION:02d}'.encode('ascii')
 LOG_MAGIC_SIZE = 8
+
+
+def encode_log_magic(version: int) -> bytes:
+    """Encode a supported log format version into the fixed-width magic header."""
+    if version not in SUPPORTED_LOG_FORMAT_VERSIONS:
+        raise ValueError(f"Unsupported log format version: {version}")
+    return f'{LOG_MAGIC_PREFIX.decode("ascii")}{version:02d}'.encode('ascii')
+
+
+def decode_log_magic(magic: bytes) -> int:
+    """Decode the fixed-width magic header into a supported log format version."""
+    if len(magic) != LOG_MAGIC_SIZE:
+        raise ValueError("Invalid log file magic size")
+    if not magic.startswith(LOG_MAGIC_PREFIX):
+        raise ValueError("Invalid log file magic")
+
+    suffix = magic[len(LOG_MAGIC_PREFIX):].decode('ascii', errors='strict')
+    if not suffix.isdigit():
+        raise ValueError("Invalid log file magic")
+
+    version = int(suffix)
+    if version not in SUPPORTED_LOG_FORMAT_VERSIONS:
+        raise ValueError(f"Unsupported log format version: {version}")
+
+    return version
 
 
 @dataclass
@@ -226,3 +253,13 @@ def deserialize_io_read_payload(payload: bytes) -> tuple[str, int, bytes]:
     path = payload[12:path_end].decode('utf-8')
     data = payload[path_end:]
     return path, size, data
+
+
+def serialize_log_complete_payload(entry_count: int, body_crc32: int) -> bytes:
+    """Serialize entry count and checksum for LOG_COMPLETE events."""
+    return struct.pack('<QI', entry_count, body_crc32)
+
+
+def deserialize_log_complete_payload(payload: bytes) -> tuple[int, int]:
+    """Deserialize entry count and checksum from a LOG_COMPLETE payload."""
+    return struct.unpack('<QI', payload)

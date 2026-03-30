@@ -41,6 +41,11 @@ class LogCorruptionError(DRTError):
     pass
 
 
+class LogIntegrityError(LogCorruptionError):
+    """Raised when log integrity metadata does not match the recorded body."""
+    pass
+
+
 class IncompleteLogError(LogCorruptionError):
     """Raised when the log lacks LOG_COMPLETE marker."""
     pass

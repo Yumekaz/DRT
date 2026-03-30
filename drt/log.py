@@ -13,6 +13,7 @@ Properties:
 
 import os
 import struct
+import zlib
 from pathlib import Path
 from typing import Iterator, Optional, List
 from threading import Lock
@@ -20,8 +21,11 @@ from threading import Lock
 from .events import (
     LogEntry, EventType, HEADER_SIZE, HEADER_FORMAT,
     LOG_FORMAT_VERSION, LOG_MAGIC, LOG_MAGIC_SIZE,
+    decode_log_magic,
+    deserialize_log_complete_payload,
+    serialize_log_complete_payload,
 )
-from .exceptions import LogCorruptionError, IncompleteLogError
+from .exceptions import LogCorruptionError, IncompleteLogError, LogIntegrityError
 
 
 class EventLog:
@@ -52,6 +56,10 @@ class EventLog:
         self._entries: List[LogEntry] = []
         self._is_recording = False
         self._is_complete = False
+        self._format_version = LOG_FORMAT_VERSION
+        self._integrity_available = False
+        self._integrity_valid = False
+        self._body_crc32 = 0
         
     def open_for_record(self):
         """
@@ -63,7 +71,12 @@ class EventLog:
         self._file.write(LOG_MAGIC)
         self._file.flush()
         self._is_recording = True
+        self._is_complete = False
         self._entries = []
+        self._format_version = LOG_FORMAT_VERSION
+        self._integrity_available = self._format_version >= 2
+        self._integrity_valid = False
+        self._body_crc32 = 0
         
     def open_for_replay(self):
         """
@@ -84,8 +97,10 @@ class EventLog:
         # Verify magic
         if len(data) < LOG_MAGIC_SIZE:
             raise LogCorruptionError("Log file too small")
-        if data[:LOG_MAGIC_SIZE] != LOG_MAGIC:
-            raise LogCorruptionError("Invalid log file magic")
+        try:
+            self._format_version = decode_log_magic(data[:LOG_MAGIC_SIZE])
+        except ValueError as e:
+            raise LogCorruptionError(str(e))
             
         # Parse all entries
         offset = LOG_MAGIC_SIZE
@@ -107,6 +122,41 @@ class EventLog:
                 "Log does not end with LOG_COMPLETE marker. "
                 "The recorded execution may have crashed."
             )
+
+        if self._format_version >= 2:
+            complete_entry = self._entries[-1]
+            try:
+                expected_entry_count, expected_crc32 = (
+                    deserialize_log_complete_payload(complete_entry.payload)
+                )
+            except struct.error as e:
+                raise LogIntegrityError(
+                    f"Invalid LOG_COMPLETE payload for format v{self._format_version}: {e}"
+                )
+
+            actual_entry_count = len(self._entries) - 1
+            complete_entry_size = len(complete_entry.serialize())
+            actual_crc32 = zlib.crc32(
+                data[LOG_MAGIC_SIZE:len(data) - complete_entry_size]
+            ) & 0xFFFFFFFF
+
+            if expected_entry_count != actual_entry_count:
+                raise LogIntegrityError(
+                    "LOG_COMPLETE entry count does not match the number of replay entries"
+                )
+
+            if expected_crc32 != actual_crc32:
+                raise LogIntegrityError(
+                    "Log body checksum mismatch; the recording may be corrupted or tampered with"
+                )
+
+            self._integrity_available = True
+            self._integrity_valid = True
+            self._body_crc32 = actual_crc32
+        else:
+            self._integrity_available = False
+            self._integrity_valid = False
+            self._body_crc32 = 0
             
         self._is_complete = True
         self._is_recording = False
@@ -128,6 +178,8 @@ class EventLog:
             self._file.write(data)
             self._file.flush()
             os.fsync(self._file.fileno())
+            if entry.event_type != EventType.LOG_COMPLETE:
+                self._body_crc32 = zlib.crc32(data, self._body_crc32) & 0xFFFFFFFF
             self._entries.append(entry)
             
     def get_entry(self, index: int) -> Optional[LogEntry]:
@@ -192,10 +244,15 @@ class EventLog:
             logical_time=len(self._entries),
             thread_id=0,
             event_type=EventType.LOG_COMPLETE,
-            payload=b''
+            payload=serialize_log_complete_payload(
+                len(self._entries),
+                self._body_crc32,
+            )
         )
         self.append(complete_entry)
         self._is_complete = True
+        self._integrity_available = True
+        self._integrity_valid = True
         
     def close(self):
         """Close the log file."""
@@ -224,7 +281,22 @@ class EventLog:
     @property
     def format_version(self) -> int:
         """Binary log format version."""
-        return LOG_FORMAT_VERSION
+        return self._format_version
+
+    @property
+    def integrity_available(self) -> bool:
+        """Whether this log format carries integrity metadata."""
+        return self._integrity_available
+
+    @property
+    def integrity_valid(self) -> bool:
+        """Whether the available integrity metadata has been verified."""
+        return self._integrity_valid
+
+    @property
+    def body_checksum(self) -> int:
+        """CRC32 checksum for the serialized event body."""
+        return self._body_crc32
     
     def __iter__(self) -> Iterator[LogEntry]:
         """Iterate over all entries (excluding LOG_COMPLETE)."""
@@ -246,6 +318,11 @@ class EventLog:
             f"DRT Log: {self.filepath}",
             f"Format version: {self.format_version}",
             f"Entries: {len(self._entries)}",
+            (
+                f"Integrity: verified (crc32=0x{self.body_checksum:08x})"
+                if self.integrity_available
+                else "Integrity: unavailable (legacy log format)"
+            ),
             "",
         ]
         
@@ -304,6 +381,18 @@ class EventLog:
                             )
                         else:
                             payload_str = f" bytes={len(data)}"
+                    except:
+                        payload_str = f" payload={entry.payload.hex()}"
+                elif entry.event_type == EventType.LOG_COMPLETE:
+                    from .events import deserialize_log_complete_payload
+                    try:
+                        entry_count, checksum = deserialize_log_complete_payload(
+                            entry.payload
+                        )
+                        payload_str = (
+                            f" entry_count={entry_count}"
+                            f" crc32=0x{checksum:08x}"
+                        )
                     except:
                         payload_str = f" payload={entry.payload.hex()}"
                 else:

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Test: Real Race Condition Bug - Caught and Reproduced
+Test: race condition bug captured and replayed.
 
-This test demonstrates DRT's core value proposition with a REAL race condition.
+This script demonstrates DRT's core value proposition with a real lost-update
+race condition inside the supported DRT API surface.
 
 The Bug: Lost Update
     Multiple threads increment a shared counter without synchronization.
@@ -19,9 +20,9 @@ Why This Bug Is Hard:
     - May only occur 1 in 100 runs normally
 
 What DRT Does:
-    - Records the exact interleaving that caused lost updates
-    - Replays it perfectly, same lost updates every time
-    - Now you can debug without the bug disappearing
+    - Records one interleaving that caused lost updates
+    - Replays that same recorded trace
+    - Lets you debug without the bug disappearing
 """
 
 import sys
@@ -31,6 +32,13 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from drt import DRTRuntime, DRTThread, runtime_yield
+
+
+def make_temp_log_path() -> str:
+    """Create a cross-platform temporary log path."""
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.log')
+    temp_file.close()
+    return temp_file.name
 
 
 class BuggyCounter:
@@ -97,7 +105,7 @@ def main():
     print("     Read-modify-write is not atomic, so updates get lost.")
     print()
     
-    log_path = tempfile.mktemp(suffix='.log')
+    log_path = make_temp_log_path()
     
     NUM_THREADS = 3
     INCREMENTS = 5  # Per thread
@@ -155,17 +163,17 @@ def main():
     print(f"  Replay final count: {replayed_value[0]}")
     
     if replayed_value[0] == actual:
-        print("  ✓ Replay matched recording exactly!")
+        print("  [OK] Replay stayed consistent with the recorded trace.")
     else:
-        print("  ✗ REPLAY DIVERGED - this should never happen!")
+        print("  [FAIL] REPLAY DIVERGED - this should never happen!")
         sys.exit(1)
     
     # ─────────────────────────────────────────────────────────────────────
-    # STEP 3: Replay 10 times to prove determinism
+    # STEP 3: Replay 10 times to confirm replay stability
     # ─────────────────────────────────────────────────────────────────────
     print()
     print("-" * 70)
-    print("STEP 3: Replaying 10 times to prove determinism...")
+    print("STEP 3: Replaying 10 times to confirm replay stability...")
     print("-" * 70)
     
     all_match = True
@@ -180,7 +188,7 @@ def main():
         runtime.run(prog)
         
         match = replay_val[0] == actual
-        status = "✓" if match else "✗"
+        status = "[OK]" if match else "[FAIL]"
         print(f"  Replay {i+1:2d}: count={replay_val[0]:2d} {status}")
         
         if not match:
@@ -198,11 +206,11 @@ def main():
         print()
         if lost > 0:
             print(f"The race condition (lost {lost} updates) was captured once")
-            print("and reproduced perfectly 10 times.")
+            print("and replayed consistently 10 times.")
         else:
             print("No race occurred, but the execution was still deterministic.")
         print()
-        print("This is DRT's value: record once, reproduce forever.")
+        print("This is DRT's value: record once, replay the same trace again.")
     else:
         print("FAILURE: Replays were not deterministic!")
         print("=" * 70)
