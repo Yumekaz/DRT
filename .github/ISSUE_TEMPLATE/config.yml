@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: DRT repository issues
+    url: https://github.com/Yumekaz/DRT/issues
+    about: Use this repo's issue tracker for bugs, ideas, and release feedback.
