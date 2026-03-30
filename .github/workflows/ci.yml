@@ -34,6 +34,9 @@ jobs:
       - name: Run unittest discovery
         run: python -m unittest discover -v
 
+      - name: Smoke-test replay case study script
+        run: python tests/test_race_condition.py
+
   package:
     runs-on: ubuntu-latest
 
@@ -69,3 +72,6 @@ jobs:
           python -c "from drt import DRTRuntime; DRTRuntime(mode='record', log_path='smoke.log').run(lambda: None)"
           drt info smoke.log
           drt verify smoke.log
+
+      - name: Smoke-test benchmark script
+        run: python benchmarks/benchmark_drt.py

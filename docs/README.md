@@ -14,6 +14,7 @@ This directory contains the core written documentation for DRT.
 | [API_REFERENCE.md](API_REFERENCE.md) | Public API reference and examples |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | System design, major components, and design tradeoffs |
 | [SPECIFICATION.md](SPECIFICATION.md) | Formal model and target behavior for the runtime |
+| [CASE_STUDY_LOST_UPDATE.md](CASE_STUDY_LOST_UPDATE.md) | A concrete lost-update debugging story from record through replay and fix |
 
 ## Suggested Reading Order
 
@@ -21,7 +22,8 @@ This directory contains the core written documentation for DRT.
 
 1. [USER_GUIDE.md](USER_GUIDE.md)
 2. [API_REFERENCE.md](API_REFERENCE.md)
-3. [ARCHITECTURE.md](ARCHITECTURE.md)
+3. [CASE_STUDY_LOST_UPDATE.md](CASE_STUDY_LOST_UPDATE.md)
+4. [ARCHITECTURE.md](ARCHITECTURE.md)
 
 ### Contributors
 

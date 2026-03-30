@@ -6,6 +6,7 @@ Deterministic record-and-replay runtime for DRT-instrumented Python concurrency 
   <a href="#why-this-project-is-interesting">Why it matters</a> |
   <a href="#quick-start">Quick start</a> |
   <a href="#how-drt-works">How it works</a> |
+  <a href="#evidence">Evidence</a> |
   <a href="#api-surface">API surface</a> |
   <a href="#limitations-and-non-goals">Limitations</a> |
   <a href="#project-layout">Project layout</a>
@@ -194,10 +195,18 @@ data = drt_read_file("input.txt")
 ```bash
 python tests/test_runtime.py
 python -m unittest discover -v
+python tests/test_race_condition.py
+python benchmarks/benchmark_drt.py
 ```
 
 The main regression suite lives in [tests/test_runtime.py](tests/test_runtime.py).
 Contributor workflow and build/release checks live in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Evidence
+
+- [docs/CASE_STUDY_LOST_UPDATE.md](docs/CASE_STUDY_LOST_UPDATE.md): a concrete bug-capture -> replay -> fix story grounded in this repo
+- [tests/test_race_condition.py](tests/test_race_condition.py): a runnable replay script for the lost-update scenario
+- [benchmarks/README.md](benchmarks/README.md): benchmark notes and how to run the current runtime-overhead check
 
 ## Interactive Tour
 
@@ -275,6 +284,7 @@ drt/
 |   |-- __init__.py
 |   |-- test_race_condition.py
 |   `-- test_runtime.py
+|-- benchmarks/
 |-- demo/
 |-- docs/
 |-- DESIGN.md

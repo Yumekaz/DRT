@@ -13,6 +13,7 @@ Tests verify:
 
 import sys
 import os
+import random
 import subprocess
 import tempfile
 import unittest
@@ -22,7 +23,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from drt import (
     DRTRuntime, DRTThread, DRTMutex, DRTCondition, DRTSemaphore, DRTBarrier,
-    runtime_yield, drt_time, drt_random, drt_randint, drt_seed, drt_read_file,
+    runtime_yield, drt_time, drt_random, drt_randint, drt_randrange,
+    drt_choice, drt_shuffle, drt_sample, drt_seed, drt_read_file,
     DeadlockError, DivergenceError, IncompleteLogError, LogIntegrityError, EventType
 )
 from drt.events import HEADER_SIZE, LOG_MAGIC_SIZE, LogEntry
@@ -755,6 +757,119 @@ class TestSynchronizationPrimitives(unittest.TestCase):
         self.assertEqual(len([r for r in results if r.endswith('-out')]), 3)
 
 
+class TestInvariantFuzzing(unittest.TestCase):
+    """Randomized regression tests for replay and log invariants."""
+
+    def setUp(self):
+        self.log_file = tempfile.NamedTemporaryFile(delete=False, suffix='.log')
+        self.log_path = self.log_file.name
+        self.log_file.close()
+
+    def tearDown(self):
+        try:
+            os.unlink(self.log_path)
+        except:
+            pass
+
+    def test_randomized_supported_api_replay_invariants(self):
+        """Randomized DRT-managed workloads should replay identically across seeds."""
+        input_file = tempfile.NamedTemporaryFile(delete=False)
+        input_file.write(b'drt-fuzz-input')
+        input_file.close()
+
+        try:
+            for seed in range(10):
+                record_results = []
+                replay_results = []
+
+                def program(results):
+                    drt_seed(seed)
+                    shared = []
+
+                    def worker(name):
+                        bucket = list(range(6))
+                        drt_shuffle(bucket)
+                        sample = tuple(drt_sample(range(8), 3))
+                        file_bytes = drt_read_file(input_file.name, size=4)
+
+                        shared.append(
+                            (
+                                name,
+                                drt_randint(1, 20),
+                                drt_randrange(0, 30, 3),
+                                drt_choice(('red', 'green', 'blue')),
+                                tuple(bucket),
+                                sample,
+                                file_bytes,
+                                round(drt_random(), 10),
+                            )
+                        )
+                        runtime_yield()
+                        shared.append((name, 'time', drt_time()))
+
+                    threads = [
+                        DRTThread(target=worker, args=(f't{index}',))
+                        for index in range(3)
+                    ]
+                    for thread in threads:
+                        thread.start()
+                    for thread in threads:
+                        thread.join()
+
+                    results.extend(shared)
+
+                runtime = DRTRuntime(mode='record', log_path=self.log_path)
+                runtime.run(lambda: program(record_results))
+
+                runtime = DRTRuntime(mode='replay', log_path=self.log_path)
+                runtime.run(lambda: program(replay_results))
+
+                self.assertEqual(
+                    record_results,
+                    replay_results,
+                    msg=f"Replay drifted on randomized seed {seed}",
+                )
+        finally:
+            try:
+                os.unlink(input_file.name)
+            except:
+                pass
+
+    def test_randomized_log_entry_round_trip_invariants(self):
+        """Random serialized log entries should deserialize back to the same values."""
+        rng = random.Random(20260330)
+        blob = bytearray()
+        original_entries = []
+        logical_time = 0
+
+        for _ in range(200):
+            logical_time += rng.randint(0, 3)
+            payload = bytes(rng.getrandbits(8) for _ in range(rng.randint(0, 32)))
+            entry = LogEntry(
+                logical_time=logical_time,
+                thread_id=rng.randint(0, 8),
+                event_type=rng.choice(list(EventType)),
+                payload=payload,
+            )
+            original_entries.append(entry)
+            blob.extend(entry.serialize())
+
+        offset = 0
+        parsed_entries = []
+        data = bytes(blob)
+
+        while offset < len(data):
+            entry, offset = LogEntry.deserialize(data, offset)
+            parsed_entries.append(entry)
+
+        self.assertEqual(len(parsed_entries), len(original_entries))
+        for expected, actual in zip(original_entries, parsed_entries):
+            self.assertEqual(expected.logical_time, actual.logical_time)
+            self.assertEqual(expected.thread_id, actual.thread_id)
+            self.assertEqual(expected.event_type, actual.event_type)
+            self.assertEqual(expected.payload, actual.payload)
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -771,6 +886,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestPhaseTwoStrictReplay))
     suite.addTests(loader.loadTestsFromTestCase(TestLogFormat))
     suite.addTests(loader.loadTestsFromTestCase(TestSynchronizationPrimitives))
+    suite.addTests(loader.loadTestsFromTestCase(TestInvariantFuzzing))
     
     # Run tests
     runner = unittest.TextTestRunner(verbosity=2)
