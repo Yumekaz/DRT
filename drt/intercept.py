@@ -233,6 +233,7 @@ class NondeterminismInterceptor:
                     self._scheduler.logical_time,
                     f"seed={int(value)}",
                     f"seed={int(logged_seed)}",
+                    event_index=self._scheduler.last_replay_event_index,
                 )
             self._random_state.seed(int(logged_seed))
             
@@ -331,6 +332,7 @@ class NondeterminismInterceptor:
                 self._scheduler.logical_time,
                 f"path={path}",
                 f"path={logged_path}",
+                event_index=self._scheduler.last_replay_event_index,
             )
 
         if logged_size != -1 and logged_size != size:
@@ -339,6 +341,7 @@ class NondeterminismInterceptor:
                 self._scheduler.logical_time,
                 f"size={size}",
                 f"size={logged_size}",
+                event_index=self._scheduler.last_replay_event_index,
             )
 
         return data

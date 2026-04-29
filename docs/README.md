@@ -15,6 +15,7 @@ This directory contains the core written documentation for DRT.
 | [ARCHITECTURE.md](ARCHITECTURE.md) | System design, major components, and design tradeoffs |
 | [SPECIFICATION.md](SPECIFICATION.md) | Formal model and target behavior for the runtime |
 | [CASE_STUDY_LOST_UPDATE.md](CASE_STUDY_LOST_UPDATE.md) | A concrete lost-update debugging story from record through replay and fix |
+| [CASE_STUDY_CHECK_BUNDLE_MINIMIZE.md](CASE_STUDY_CHECK_BUNDLE_MINIMIZE.md) | Runnable `drt check` evidence for finding, replaying, minimizing, and inspecting a failure bundle |
 | [FLAGSHIP_ROADMAP.md](FLAGSHIP_ROADMAP.md) | Product direction for deterministic concurrency testing, bundles, minimization, pytest, and async boundaries |
 
 ## Suggested Reading Order
@@ -24,7 +25,8 @@ This directory contains the core written documentation for DRT.
 1. [USER_GUIDE.md](USER_GUIDE.md)
 2. [API_REFERENCE.md](API_REFERENCE.md)
 3. [CASE_STUDY_LOST_UPDATE.md](CASE_STUDY_LOST_UPDATE.md)
-4. [ARCHITECTURE.md](ARCHITECTURE.md)
+4. [CASE_STUDY_CHECK_BUNDLE_MINIMIZE.md](CASE_STUDY_CHECK_BUNDLE_MINIMIZE.md)
+5. [ARCHITECTURE.md](ARCHITECTURE.md)
 
 ### Contributors
 

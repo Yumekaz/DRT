@@ -33,6 +33,7 @@ from .events import (
     serialize_thread_join_payload,
 )
 from .log import EventLog
+from .trace import format_log_event
 from .exceptions import (
     DeadlockError,
     DivergenceError,
@@ -464,6 +465,7 @@ class Scheduler:
                     self._logical_time,
                     f"thread {expected_thread} runnable",
                     f"thread {expected_thread} in state {state_name}",
+                    event_index=self._replay_index - 1,
                 )
 
             chosen = expected_thread
@@ -573,6 +575,7 @@ class Scheduler:
         expected_thread_id: Optional[int] = None,
     ) -> LogEntry:
         """Consume the next replay event exactly. Requires self._lock."""
+        event_index = self._replay_index
         entry = self._peek_replay_event_unlocked()
         expected = self._format_expected_event(expected_type, expected_thread_id)
 
@@ -582,6 +585,7 @@ class Scheduler:
                 self._logical_time,
                 expected,
                 "end of log",
+                event_index=event_index,
             )
 
         actual = self._format_log_entry(entry)
@@ -592,6 +596,7 @@ class Scheduler:
                 self._logical_time,
                 f"{expected} at logical time {self._logical_time}",
                 f"{actual} at logical time {entry.logical_time}",
+                event_index=event_index,
             )
 
         if entry.event_type != expected_type:
@@ -600,6 +605,7 @@ class Scheduler:
                 self._logical_time,
                 expected,
                 actual,
+                event_index=event_index,
             )
 
         if expected_thread_id is not None and entry.thread_id != expected_thread_id:
@@ -608,6 +614,7 @@ class Scheduler:
                 self._logical_time,
                 expected,
                 actual,
+                event_index=event_index,
             )
 
         self._replay_index += 1
@@ -621,11 +628,11 @@ class Scheduler:
         """Format an expected replay event for diagnostics."""
         if thread_id is None:
             return event_type.name
-        return f"{event_type.name} by thread {thread_id}"
+        return f"{event_type.name} thread={thread_id}"
 
     def _format_log_entry(self, entry: LogEntry) -> str:
         """Format a log entry for divergence diagnostics."""
-        return f"{entry.event_type.name} by thread {entry.thread_id}"
+        return format_log_event(entry)
 
     def verify_replay_complete(self):
         """Ensure replay consumed the final LOG_COMPLETE marker and nothing else."""
@@ -639,6 +646,7 @@ class Scheduler:
                     self._logical_time,
                     "LOG_COMPLETE",
                     "end of log",
+                    event_index=self._replay_index,
                 )
 
             entry = self.log._entries[self._replay_index]
@@ -648,6 +656,7 @@ class Scheduler:
                     self._logical_time,
                     "LOG_COMPLETE",
                     self._format_log_entry(entry),
+                    event_index=self._replay_index,
                 )
 
             self._replay_index += 1
@@ -659,6 +668,7 @@ class Scheduler:
                     self._logical_time,
                     "end of log",
                     self._format_log_entry(extra),
+                    event_index=self._replay_index,
                 )
         
     def _log_event(self, event_type: EventType, payload: bytes, 
@@ -736,6 +746,7 @@ class Scheduler:
                             f"immediate={acquired_immediately}"
                         ),
                         entry.payload.hex(),
+                        event_index=self._replay_index - 1,
                     )
             else:
                 self._log_event(EventType.LOCK_ACQUIRE, payload, thread_id)
@@ -801,6 +812,7 @@ class Scheduler:
                             f"immediate={acquired_immediately}"
                         ),
                         entry.payload.hex(),
+                        event_index=self._replay_index - 1,
                     )
             else:
                 self._log_event(EventType.LOCK_ACQUIRE, payload, thread_id)
@@ -840,6 +852,7 @@ class Scheduler:
                         self._logical_time,
                         f"LOCK_RELEASE mutex={mutex_id}",
                         entry.payload.hex(),
+                        event_index=self._replay_index - 1,
                     )
             else:
                 self._log_event(
@@ -887,6 +900,7 @@ class Scheduler:
                         self._logical_time,
                         f"COND_WAIT cond={cond_id}",
                         entry.payload.hex(),
+                        event_index=self._replay_index - 1,
                     )
             else:
                 self._log_event(
@@ -939,6 +953,7 @@ class Scheduler:
                                 self._logical_time,
                                 f"COND_WAKE cond={cond_id}",
                                 "no waiter available",
+                                event_index=self._replay_index,
                             )
                 return None
 
@@ -950,6 +965,7 @@ class Scheduler:
                         self._logical_time,
                         f"COND_WAKE by thread {thread_id}",
                         "no matching COND_WAKE",
+                        event_index=self._replay_index,
                     )
 
                 entry = self._consume_replay_event_unlocked(
@@ -963,6 +979,7 @@ class Scheduler:
                         self._logical_time,
                         f"COND_WAKE cond={cond_id}",
                         f"COND_WAKE cond={logged_cond_id}",
+                        event_index=self._replay_index - 1,
                     )
                 if target not in waiters:
                     raise DivergenceError(
@@ -970,6 +987,7 @@ class Scheduler:
                         self._logical_time,
                         f"thread waiting on cond {cond_id}",
                         f"thread {target} not waiting",
+                        event_index=self._replay_index - 1,
                     )
                 waiters.remove(target)
             else:
@@ -1044,6 +1062,7 @@ class Scheduler:
                             self._logical_time,
                             f"THREAD_JOIN target={target_thread_id}",
                             f"THREAD_JOIN target={logged_target_thread_id}",
+                            event_index=self._replay_index - 1,
                         )
                     if logged_immediate != expected_immediate:
                         raise DivergenceError(
@@ -1051,6 +1070,7 @@ class Scheduler:
                             self._logical_time,
                             f"THREAD_JOIN immediate={expected_immediate}",
                             f"THREAD_JOIN immediate={logged_immediate}",
+                            event_index=self._replay_index - 1,
                         )
                 else:
                     self._log_event(
@@ -1081,6 +1101,7 @@ class Scheduler:
                             self._logical_time,
                             f"thread {target_thread_id} still running",
                             f"THREAD_JOIN target={target_thread_id}",
+                            event_index=self._replay_index,
                         )
 
             thread.state = ThreadState.BLOCKED_JOIN
@@ -1094,6 +1115,14 @@ class Scheduler:
     def logical_time(self) -> int:
         """Current logical time."""
         return self._logical_time
+
+    @property
+    def last_replay_event_index(self) -> Optional[int]:
+        """Index of the last consumed replay event, if replay consumed one."""
+        with self._lock:
+            if self._replay_index <= 0:
+                return None
+            return self._replay_index - 1
 
     @property
     def schedule_strategy(self) -> str:

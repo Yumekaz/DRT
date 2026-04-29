@@ -18,6 +18,7 @@ from drt.replay import (
     replay_bundle,
     validate_source_hashes,
 )
+from drt.exceptions import DivergenceError, format_replay_failure
 from drt.runtime import DRTRuntime
 
 
@@ -124,6 +125,24 @@ class TestBundleReplay(ReplayTestCase):
         self.assertEqual(len(result.source_drifts), 1)
         self.assertEqual(result.source_drifts[0].status, "changed")
         self.assertTrue(result.reproduced)
+
+        report = format_replay_failure(
+            DivergenceError(
+                "Replay event mismatch",
+                logical_time=4,
+                expected="THREAD_JOIN thread=0",
+                actual="THREAD_EXIT thread=1",
+                event_index=7,
+            ),
+            source_changed=result.source_changed,
+            source_drifts=result.source_drifts,
+        )
+        self.assertIn("Diverged at event 7", report)
+        self.assertIn("logical time: 4", report)
+        self.assertIn("expected: THREAD_JOIN thread=0", report)
+        self.assertIn("actual:   THREAD_EXIT thread=1", report)
+        self.assertIn("source changed: yes", report)
+        self.assertIn(f"changed: {module_path.resolve()}", report)
 
     def test_replay_returns_false_when_failure_no_longer_matches(self):
         module_name, _, module = self.write_module(

@@ -140,6 +140,15 @@ def format_timeline(path: str | Path) -> str:
     return "\n".join(lines)
 
 
+def format_log_event(entry: LogEntry) -> str:
+    """Return a compact one-line description of a log event."""
+
+    details = _describe_payload(entry)
+    if details:
+        return f"{entry.event_type.name} thread={entry.thread_id} ({details})"
+    return f"{entry.event_type.name} thread={entry.thread_id}"
+
+
 def format_explain(path: str | Path) -> str:
     """Return a higher-level explanation of what a DRT trace contains."""
 

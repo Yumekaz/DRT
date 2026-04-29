@@ -74,6 +74,7 @@ from .bundle import (
 from .trace import (
     TraceEvent,
     TraceSummary,
+    format_log_event,
     format_explain,
     format_timeline,
     load_trace,
@@ -138,6 +139,7 @@ from .exceptions import (
     DRTError,
     DeadlockError,
     DivergenceError,
+    format_replay_failure,
     LogCorruptionError,
     LogIntegrityError,
     IncompleteLogError,
@@ -173,6 +175,7 @@ __all__ = [
     # Trace inspection
     'TraceEvent',
     'TraceSummary',
+    'format_log_event',
     'format_explain',
     'format_timeline',
     'load_trace',
@@ -231,6 +234,7 @@ __all__ = [
     'DRTError',
     'DeadlockError',
     'DivergenceError',
+    'format_replay_failure',
     'LogCorruptionError',
     'LogIntegrityError',
     'IncompleteLogError',

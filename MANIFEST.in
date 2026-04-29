@@ -1,0 +1,9 @@
+include LICENSE
+include README.md
+include pyproject.toml
+include setup.py
+recursive-include benchmarks *.md *.py
+recursive-include demo *.py
+recursive-include docs *.md
+recursive-include tests *.py
+global-exclude __pycache__ *.py[cod] *.log

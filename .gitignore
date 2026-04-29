@@ -26,6 +26,8 @@ htmlcov/
 .drt/
 .drt-smoke/
 .drt-build-venv/
+demo/.case-study/
+demo/_case_study_tmp/
 
 # Runtime artifacts
 *.log

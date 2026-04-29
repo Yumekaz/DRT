@@ -25,7 +25,8 @@ from drt import (
     DRTRuntime, DRTThread, DRTMutex, DRTCondition, DRTSemaphore, DRTBarrier,
     runtime_yield, drt_time, drt_random, drt_randint, drt_randrange,
     drt_choice, drt_shuffle, drt_sample, drt_seed, drt_read_file,
-    DeadlockError, DivergenceError, IncompleteLogError, LogIntegrityError, EventType
+    DeadlockError, DivergenceError, IncompleteLogError, LogIntegrityError, EventType,
+    format_replay_failure,
 )
 from drt.events import HEADER_SIZE, LOG_MAGIC_SIZE, LogEntry
 from drt.log import EventLog
@@ -528,6 +529,38 @@ class TestPhaseTwoStrictReplay(unittest.TestCase):
         runtime = DRTRuntime(mode='replay', log_path=self.log_path)
         with self.assertRaises(DivergenceError):
             runtime.run(replay_program)
+
+    def test_divergence_report_includes_replay_event_context(self):
+        """User-facing divergence reports should identify the mismatched event."""
+
+        def record_program():
+            drt_time()
+
+            thread = DRTThread(target=lambda: drt_time())
+            thread.start()
+            thread.join()
+
+        def replay_program():
+            thread = DRTThread(target=lambda: drt_time())
+            thread.start()
+            thread.join()
+            drt_time()
+
+        runtime = DRTRuntime(mode='record', log_path=self.log_path)
+        runtime.run(record_program)
+
+        runtime = DRTRuntime(mode='replay', log_path=self.log_path)
+        with self.assertRaises(DivergenceError) as caught:
+            runtime.run(replay_program)
+
+        error = caught.exception
+        report = format_replay_failure(error)
+
+        self.assertEqual(error.event_index, 0)
+        self.assertIn("Diverged at event 0", report)
+        self.assertIn("logical time: 0", report)
+        self.assertIn("expected: THREAD_CREATE thread=0", report)
+        self.assertIn("actual:   TIME_READ thread=0", report)
 
     def test_replay_rejects_join_target_mismatch(self):
         """THREAD_JOIN replay must validate which target thread completed."""

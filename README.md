@@ -174,6 +174,7 @@ The repository includes runnable proof points, not just API docs:
 - [tests/test_trace.py](tests/test_trace.py): trace timeline, explanation, and HTML report coverage
 - [tests/test_schedule_exploration.py](tests/test_schedule_exploration.py): seeded random and scripted schedule policy coverage
 - [tests/test_minimize.py](tests/test_minimize.py): schedule-choice minimization helper coverage
+- [docs/CASE_STUDY_CHECK_BUNDLE_MINIMIZE.md](docs/CASE_STUDY_CHECK_BUNDLE_MINIMIZE.md): runnable `drt check` to bundle to replay to minimize proof path
 - [tests/test_race_condition.py](tests/test_race_condition.py): end-to-end lost-update replay script
 - [benchmarks/benchmark_drt.py](benchmarks/benchmark_drt.py): small benchmark covering plain execution, record, and replay
 - [docs/CASE_STUDY_LOST_UPDATE.md](docs/CASE_STUDY_LOST_UPDATE.md): concrete bug-capture to replay to fix walkthrough

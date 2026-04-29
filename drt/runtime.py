@@ -27,7 +27,7 @@ from .thread import clear_current_thread_id, set_current_thread_id
 from .intercept import NondeterminismInterceptor
 from .exceptions import (
     DRTError, DivergenceError, LogCorruptionError, 
-    IncompleteLogError, RuntimeStateError
+    IncompleteLogError, RuntimeStateError, format_replay_failure
 )
 
 
@@ -296,9 +296,7 @@ def run_replay(target: Callable, log_path: str = 'execution.log',
     except DivergenceError as e:
         if verbose:
             print(f"\n=== Replay Diverged ===")
-            print(f"Divergence detected at logical time {e.logical_time}")
-            print(f"Expected: {e.expected}")
-            print(f"Actual: {e.actual}")
+            print(format_replay_failure(e))
         raise
         
     except IncompleteLogError as e:
@@ -581,8 +579,13 @@ def main():
                     f"  {drift.status}: {drift.path} "
                     f"expected={drift.expected_sha256} actual={drift.actual_sha256}"
                 )
+            if result.failure_report:
+                print(result.failure_report)
             if not result.reproduced:
                 sys.exit(1)
+        except DivergenceError as e:
+            print(format_replay_failure(e), file=sys.stderr)
+            sys.exit(1)
         except Exception as e:
             print(f"Replay failed: {e}", file=sys.stderr)
             sys.exit(1)

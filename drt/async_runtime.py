@@ -21,6 +21,7 @@ from .events import (
 )
 from .exceptions import DivergenceError, RuntimeStateError
 from .log import EventLog
+from .trace import format_log_event
 
 
 class _YieldPoint:
@@ -198,6 +199,7 @@ class DRTAsyncRuntime:
                     self._logical_time,
                     f"task in {list(runnable)}",
                     f"task {entry.thread_id}",
+                    event_index=self._replay_index - 1,
                 )
             chosen = entry.thread_id
         else:
@@ -262,37 +264,52 @@ class DRTAsyncRuntime:
         expected_type: EventType,
         expected_thread_id: Optional[int] = None,
     ) -> LogEntry:
+        event_index = self._replay_index
         entry = self._peek_replay_event()
+        expected = self._format_expected_event(expected_type, expected_thread_id)
         if entry is None:
             raise DivergenceError(
                 f"Expected {expected_type.name} but async replay log ended",
                 self._logical_time,
-                expected_type.name,
+                expected,
                 "end of log",
+                event_index=event_index,
             )
         if entry.logical_time != self._logical_time:
             raise DivergenceError(
                 "Async replay event appeared at an unexpected logical time",
                 self._logical_time,
-                f"{expected_type.name} at logical time {self._logical_time}",
-                f"{entry.event_type.name} at logical time {entry.logical_time}",
+                f"{expected} at logical time {self._logical_time}",
+                f"{format_log_event(entry)} at logical time {entry.logical_time}",
+                event_index=event_index,
             )
         if entry.event_type != expected_type:
             raise DivergenceError(
                 f"Expected {expected_type.name}",
                 self._logical_time,
-                expected_type.name,
-                entry.event_type.name,
+                expected,
+                format_log_event(entry),
+                event_index=event_index,
             )
         if expected_thread_id is not None and entry.thread_id != expected_thread_id:
             raise DivergenceError(
                 f"Expected event by task {expected_thread_id}",
                 self._logical_time,
-                f"task {expected_thread_id}",
-                f"task {entry.thread_id}",
+                expected,
+                format_log_event(entry),
+                event_index=event_index,
             )
         self._replay_index += 1
         return entry
+
+    def _format_expected_event(
+        self,
+        event_type: EventType,
+        task_id: Optional[int] = None,
+    ) -> str:
+        if task_id is None:
+            return event_type.name
+        return f"{event_type.name} thread={task_id}"
 
     def _verify_replay_complete(self) -> None:
         if self.mode != "replay":
@@ -303,6 +320,7 @@ class DRTAsyncRuntime:
                 self._logical_time,
                 "LOG_COMPLETE",
                 "end of log",
+                event_index=self._replay_index,
             )
         entry = self.log._entries[self._replay_index]
         if entry.event_type != EventType.LOG_COMPLETE:
@@ -310,7 +328,8 @@ class DRTAsyncRuntime:
                 "Async replay finished before log was exhausted",
                 self._logical_time,
                 "LOG_COMPLETE",
-                entry.event_type.name,
+                format_log_event(entry),
+                event_index=self._replay_index,
             )
         self._replay_index += 1
         if self._replay_index != len(self.log._entries):
@@ -319,7 +338,8 @@ class DRTAsyncRuntime:
                 "Async replay log has trailing events",
                 self._logical_time,
                 "end of log",
-                extra.event_type.name,
+                format_log_event(extra),
+                event_index=self._replay_index,
             )
 
     def _close_pending_tasks(self) -> None:

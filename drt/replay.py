@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, List, Mapping, Optional, Sequence, Union
 
 from .checker import load_target
+from .exceptions import DivergenceError, format_replay_failure
 from .runtime import DRTRuntime
 
 
@@ -42,6 +43,7 @@ class BundleReplayResult:
     expected_exception_message: str = ""
     actual_exception_type: str = ""
     actual_exception_message: str = ""
+    failure_report: str = ""
     log_path: Optional[Path] = None
     schedule_choices: Sequence[int] = field(default_factory=tuple)
 
@@ -167,6 +169,13 @@ def replay_bundle(
 
     actual_type = type(actual_exception).__name__ if actual_exception else ""
     actual_message = str(actual_exception) if actual_exception else ""
+    failure_report = ""
+    if isinstance(actual_exception, DivergenceError):
+        failure_report = format_replay_failure(
+            actual_exception,
+            source_changed=bool(source_drifts),
+            source_drifts=source_drifts,
+        )
     reproduced = _exception_matches(
         expected_type,
         expected_message,
@@ -184,6 +193,7 @@ def replay_bundle(
         expected_exception_message=expected_message,
         actual_exception_type=actual_type,
         actual_exception_message=actual_message,
+        failure_report=failure_report,
         log_path=log_path,
         schedule_choices=choices,
     )
