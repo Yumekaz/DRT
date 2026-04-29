@@ -15,7 +15,7 @@ setup(
     version='0.4.0',
     author='Yumekaz',
     license='MIT',
-    description='Deterministic record-and-replay runtime for DRT-instrumented Python concurrency code',
+    description='Deterministic concurrency testing and record/replay runtime for Python',
     long_description=long_description,
     long_description_content_type='text/markdown',
     url='https://github.com/Yumekaz/DRT',
@@ -49,6 +49,9 @@ setup(
     entry_points={
         'console_scripts': [
             'drt=drt.runtime:main',
+        ],
+        'pytest11': [
+            'drt=drt.pytest_plugin',
         ],
     },
     include_package_data=True,

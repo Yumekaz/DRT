@@ -23,6 +23,9 @@ ENV/
 .coverage
 .coverage.*
 htmlcov/
+.drt/
+.drt-smoke/
+.drt-build-venv/
 
 # Runtime artifacts
 *.log

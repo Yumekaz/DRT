@@ -15,6 +15,8 @@ python tests/test_runtime.py
 python -m unittest discover -v
 python -m build
 python -m drt verify path/to/logfile.log
+python -m drt check module:function --runs 10
+python -m drt replay path/to/failure-bundle
 ```
 
 ## Project Ground Rules
@@ -30,6 +32,13 @@ python -m drt verify path/to/logfile.log
 - `drt/scheduler.py`: replay validation and scheduling behavior
 - `drt/log.py`: binary format, validation, and integrity checks
 - `drt/intercept.py`: nondeterministic input capture
+- `drt/checker.py`: repeated schedule checks and failure bundle creation
+- `drt/explorer.py`: random, exhaustive, priority, and stress schedule plans
+- `drt/replay.py`: failure bundle replay and source drift checks
+- `drt/trace.py`: trace timelines, explanations, and HTML reports
+- `drt/minimize.py`: schedule-choice minimization
+- `drt/pytest_plugin.py`: pytest integration
+- `drt/async_runtime.py`: opt-in deterministic async task runtime
 - `tests/test_runtime.py`: regression coverage
 
 ## Before Opening A Change

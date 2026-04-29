@@ -14,8 +14,9 @@ In REPLAY mode:
     - Any divergence is detected and reported
 """
 
+import random
 import threading
-from typing import Dict, Set, Optional, List, Callable
+from typing import Dict, Mapping, Set, Optional, List, Callable, Sequence
 from enum import Enum, auto
 from dataclasses import dataclass, field
 
@@ -86,16 +87,46 @@ class Scheduler:
     Threads must request permission to run and yield control explicitly.
     """
     
-    def __init__(self, mode: RuntimeMode, log: EventLog):
+    def __init__(
+        self,
+        mode: RuntimeMode,
+        log: EventLog,
+        schedule_strategy: str = "round_robin",
+        schedule_seed: Optional[int] = None,
+        schedule_choices: Optional[Sequence[int]] = None,
+        schedule_priorities: Optional[Mapping[int, int]] = None,
+    ):
         """
         Initialize the scheduler.
         
         Args:
             mode: RECORD or REPLAY mode
             log: Event log for recording or replay
+            schedule_strategy: RECORD-mode selection policy
+            schedule_seed: Seed for the random schedule policy
+            schedule_choices: Scripted runnable-index choices for replaying
+                and minimizing a discovered schedule
+            schedule_priorities: priority map used by the priority policy;
+                lower values run first, missing thread IDs default to 0
         """
+        if schedule_strategy not in ("round_robin", "random", "scripted", "priority"):
+            raise ValueError(
+                "schedule_strategy must be 'round_robin', 'random', "
+                "'scripted', or 'priority'"
+            )
+
         self.mode = mode
         self.log = log
+        self._schedule_strategy = schedule_strategy
+        self._schedule_seed = schedule_seed
+        self._schedule_rng = random.Random(schedule_seed)
+        self._schedule_choices = list(schedule_choices or [])
+        self._schedule_choice_index = 0
+        self._schedule_priorities = {
+            int(thread_id): int(priority)
+            for thread_id, priority in (schedule_priorities or {}).items()
+        }
+        self._recorded_schedule_choices: List[int] = []
         
         # Thread management
         self._threads: Dict[int, ManagedThread] = {}
@@ -437,20 +468,7 @@ class Scheduler:
 
             chosen = expected_thread
         else:
-            # RECORD mode: deterministic choice
-            # Round-robin policy: pick next thread after current
-            if self._current_thread_id is not None and len(runnable) > 1:
-                # Find next thread in round-robin order
-                sorted_runnable = sorted(runnable)
-                try:
-                    current_idx = sorted_runnable.index(self._current_thread_id)
-                    next_idx = (current_idx + 1) % len(sorted_runnable)
-                    chosen = sorted_runnable[next_idx]
-                except ValueError:
-                    # Current thread not in runnable, pick lowest
-                    chosen = min(runnable)
-            else:
-                chosen = min(runnable)
+            chosen = self._choose_record_thread_unlocked(runnable)
             self._log_event(EventType.SCHEDULE, b'', chosen)
             
         self._logical_time += 1
@@ -458,6 +476,49 @@ class Scheduler:
         # Grant permission to chosen thread
         thread = self._threads[chosen]
         thread.run_permission.set()
+
+    def _choose_record_thread_unlocked(self, runnable: Set[int]) -> int:
+        """Choose the next thread in RECORD mode and save the runnable index."""
+        sorted_runnable = sorted(runnable)
+
+        if self._schedule_strategy == "random":
+            choice_index = self._schedule_rng.randrange(len(sorted_runnable))
+        elif (
+            self._schedule_strategy == "scripted"
+            and self._schedule_choice_index < len(self._schedule_choices)
+        ):
+            raw_choice = self._schedule_choices[self._schedule_choice_index]
+            self._schedule_choice_index += 1
+            choice_index = raw_choice % len(sorted_runnable)
+        elif self._schedule_strategy == "priority":
+            choice_index = self._priority_choice_index(sorted_runnable)
+        else:
+            choice_index = self._round_robin_choice_index(sorted_runnable)
+
+        self._recorded_schedule_choices.append(choice_index)
+        return sorted_runnable[choice_index]
+
+    def _round_robin_choice_index(self, sorted_runnable: List[int]) -> int:
+        """Return the default round-robin choice index for runnable threads."""
+        if self._current_thread_id is not None and len(sorted_runnable) > 1:
+            try:
+                current_idx = sorted_runnable.index(self._current_thread_id)
+                return (current_idx + 1) % len(sorted_runnable)
+            except ValueError:
+                return 0
+
+        return 0
+
+    def _priority_choice_index(self, sorted_runnable: List[int]) -> int:
+        """Return the index of the highest-priority runnable thread."""
+        best_thread = min(
+            sorted_runnable,
+            key=lambda thread_id: (
+                self._schedule_priorities.get(thread_id, 0),
+                thread_id,
+            ),
+        )
+        return sorted_runnable.index(best_thread)
         
     def _get_runnable_threads(self) -> Set[int]:
         """
@@ -1033,6 +1094,21 @@ class Scheduler:
     def logical_time(self) -> int:
         """Current logical time."""
         return self._logical_time
+
+    @property
+    def schedule_strategy(self) -> str:
+        """RECORD-mode scheduling policy."""
+        return self._schedule_strategy
+
+    @property
+    def schedule_seed(self) -> Optional[int]:
+        """Seed used by the random schedule policy, if any."""
+        return self._schedule_seed
+
+    @property
+    def recorded_schedule_choices(self) -> List[int]:
+        """Runnable-list indexes chosen during RECORD mode."""
+        return list(self._recorded_schedule_choices)
         
     @property
     def is_running(self) -> bool:

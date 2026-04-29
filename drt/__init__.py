@@ -58,6 +58,50 @@ from .runtime import (
     dump_log,
 )
 
+# Check runner and failure bundles
+from .checker import (
+    CheckResult,
+    CheckRun,
+    load_target,
+    run_check,
+)
+from .bundle import (
+    FailureBundle,
+    create_failure_bundle,
+)
+
+# Trace inspection
+from .trace import (
+    TraceEvent,
+    TraceSummary,
+    format_explain,
+    format_timeline,
+    load_trace,
+    write_html_report,
+)
+from .minimize import (
+    MinimizeResult,
+    ReproductionResult,
+    minimize_bundle,
+)
+from .replay import (
+    BundleReplayResult,
+    SourceDrift,
+    replay_bundle,
+    validate_source_hashes,
+)
+from .explorer import (
+    SchedulePlan,
+    ScheduleRunSpec,
+    build_schedule_plan,
+)
+from .async_runtime import (
+    DRTAsyncRuntime,
+    drt_async_sleep,
+    drt_async_yield,
+)
+from .pytest_plugin import drt_test
+
 # Thread abstraction
 from .thread import (
     DRTThread,
@@ -117,6 +161,46 @@ __all__ = [
     'run_recorded',
     'run_replay',
     'dump_log',
+
+    # Check runner and bundles
+    'CheckResult',
+    'CheckRun',
+    'FailureBundle',
+    'load_target',
+    'run_check',
+    'create_failure_bundle',
+
+    # Trace inspection
+    'TraceEvent',
+    'TraceSummary',
+    'format_explain',
+    'format_timeline',
+    'load_trace',
+    'write_html_report',
+
+    # Minimization
+    'MinimizeResult',
+    'ReproductionResult',
+    'minimize_bundle',
+
+    # Bundle replay and drift validation
+    'BundleReplayResult',
+    'SourceDrift',
+    'replay_bundle',
+    'validate_source_hashes',
+
+    # Exploration plans
+    'SchedulePlan',
+    'ScheduleRunSpec',
+    'build_schedule_plan',
+
+    # Async task runtime
+    'DRTAsyncRuntime',
+    'drt_async_sleep',
+    'drt_async_yield',
+
+    # Pytest ergonomics
+    'drt_test',
     
     # Threading
     'DRTThread',

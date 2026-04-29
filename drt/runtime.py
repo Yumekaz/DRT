@@ -18,7 +18,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Any, Optional
+from typing import Callable, Any, Mapping, Optional, Sequence
 
 from .context import bind_runtime_context, clear_runtime_context
 from .scheduler import Scheduler, RuntimeMode
@@ -39,13 +39,26 @@ class DRTRuntime:
     the interface for executing programs deterministically.
     """
     
-    def __init__(self, mode: str = 'record', log_path: str = 'execution.log'):
+    def __init__(
+        self,
+        mode: str = 'record',
+        log_path: str = 'execution.log',
+        schedule_strategy: str = 'round_robin',
+        schedule_seed: Optional[int] = None,
+        schedule_choices: Optional[Sequence[int]] = None,
+        schedule_priorities: Optional[Mapping[int, int]] = None,
+    ):
         """
         Initialize the runtime.
         
         Args:
             mode: 'record' or 'replay'
             log_path: Path to the execution log file
+            schedule_strategy: RECORD-mode scheduling policy:
+                'round_robin', 'random', 'scripted', or 'priority'
+            schedule_seed: Seed used by the random schedule policy
+            schedule_choices: Runnable-list indexes used by scripted schedules
+            schedule_priorities: Thread-id priority map for priority schedules
         """
         if mode not in ('record', 'replay'):
             raise ValueError(f"Invalid mode: {mode}. Must be 'record' or 'replay'")
@@ -55,7 +68,14 @@ class DRTRuntime:
         
         # Initialize components
         self._log = EventLog(self._log_path)
-        self._scheduler = Scheduler(self._mode, self._log)
+        self._scheduler = Scheduler(
+            self._mode,
+            self._log,
+            schedule_strategy=schedule_strategy,
+            schedule_seed=schedule_seed,
+            schedule_choices=schedule_choices,
+            schedule_priorities=schedule_priorities,
+        )
         self._interceptor = NondeterminismInterceptor(self._scheduler)
         
         # Runtime state
@@ -309,6 +329,10 @@ def main():
     """Command-line interface for DRT utilities."""
     import argparse
     from . import __version__
+    from .checker import run_check
+    from .explorer import build_schedule_plan
+    from .replay import replay_bundle
+    from .trace import format_explain, format_timeline, write_html_report
     
     parser = argparse.ArgumentParser(
         description='Deterministic Record-and-Replay Runtime'
@@ -331,6 +355,113 @@ def main():
     # verify command
     verify_parser = subparsers.add_parser('verify', help='Verify log structure and integrity')
     verify_parser.add_argument('log_file', help='Log file to verify')
+
+    # check command
+    check_parser = subparsers.add_parser(
+        'check',
+        help='Run a callable under repeated DRT record-mode schedules',
+    )
+    check_parser.add_argument(
+        'target',
+        help="Callable import path in module:function syntax",
+    )
+    check_parser.add_argument(
+        '--runs',
+        type=int,
+        default=10,
+        help='Number of record-mode runs to try',
+    )
+    check_parser.add_argument(
+        '--strategy',
+        choices=('round_robin', 'random', 'exhaustive', 'priority', 'stress'),
+        default='random',
+        help='Schedule strategy for record-mode exploration',
+    )
+    check_parser.add_argument(
+        '--seed',
+        type=int,
+        default=1,
+        help='Base seed for random schedules',
+    )
+    check_parser.add_argument(
+        '--bundle-dir',
+        default='.drt/failures',
+        help='Directory for failure bundles',
+    )
+    check_parser.add_argument(
+        '--keep-going',
+        action='store_true',
+        help='Continue after failures instead of stopping at the first one',
+    )
+    check_parser.add_argument(
+        '--depth',
+        type=int,
+        default=4,
+        help='Bounded exhaustive/scripted schedule depth',
+    )
+    check_parser.add_argument(
+        '--branching',
+        type=int,
+        default=2,
+        help='Bounded exhaustive branching factor',
+    )
+    check_parser.add_argument(
+        '--stress-max-runs',
+        type=int,
+        default=None,
+        help='Maximum runs for stress mode',
+    )
+
+    replay_parser = subparsers.add_parser(
+        'replay',
+        help='Replay a failure bundle and validate source drift',
+    )
+    replay_parser.add_argument('bundle', help='Failure bundle directory')
+    replay_parser.add_argument(
+        'target',
+        nargs='?',
+        help='Optional callable import path overriding bundle metadata',
+    )
+
+    # trace inspection commands
+    timeline_parser = subparsers.add_parser(
+        'timeline',
+        help='Show a compact per-event trace timeline',
+    )
+    timeline_parser.add_argument('path', help='DRT log file or failure bundle')
+
+    explain_parser = subparsers.add_parser(
+        'explain',
+        help='Explain a DRT log or failure bundle',
+    )
+    explain_parser.add_argument('path', help='DRT log file or failure bundle')
+
+    report_parser = subparsers.add_parser(
+        'report',
+        help='Write a standalone HTML trace report',
+    )
+    report_parser.add_argument('path', help='DRT log file or failure bundle')
+    report_parser.add_argument(
+        '--output',
+        '-o',
+        default='drt-trace-report.html',
+        help='HTML output path',
+    )
+
+    minimize_parser = subparsers.add_parser(
+        'minimize',
+        help='Shrink a failure bundle schedule while preserving the failure',
+    )
+    minimize_parser.add_argument('bundle', help='Failure bundle directory')
+    minimize_parser.add_argument(
+        'target',
+        help="Callable import path in module:function syntax",
+    )
+    minimize_parser.add_argument(
+        '--output',
+        '-o',
+        help='Output bundle directory',
+    )
     
     args = parser.parse_args()
     
@@ -372,6 +503,121 @@ def main():
             print("Status: ok")
         except Exception as e:
             print(f"Verification failed: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    elif args.command == 'check':
+        try:
+            plan = build_schedule_plan(
+                mode=args.strategy,
+                runs=args.runs,
+                seed=args.seed,
+                branching_factor=args.branching,
+                depth=args.depth,
+                max_runs=args.stress_max_runs,
+            )
+            result = run_check(
+                args.target,
+                runs=args.runs,
+                bundle_root=args.bundle_dir,
+                exploration_plan=plan,
+                stop_on_failure=not args.keep_going,
+            )
+            print(f"Checked: {result.target_path}")
+            print(f"Runs: {result.completed_runs}/{result.requested_runs}")
+            for run in result.runs:
+                status = "ok" if run.success else "failed"
+                seed = (
+                    f" seed={run.schedule_seed}"
+                    if run.schedule_seed is not None
+                    else ""
+                )
+                bundle = (
+                    f" bundle={run.bundle_path}"
+                    if run.bundle_path is not None
+                    else ""
+                )
+                print(
+                    f"  run {run.run_index}: {status}"
+                    f" {run.duration_seconds:.4f}s{seed}{bundle}"
+                )
+            if result.passed:
+                print("Status: ok")
+            else:
+                failing = result.failing_run
+                if failing is not None:
+                    print(
+                        f"Failure: {failing.exception_type}: "
+                        f"{failing.exception_message}"
+                    )
+                print("Status: failed")
+                sys.exit(1)
+        except Exception as e:
+            print(f"Check failed: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    elif args.command == 'timeline':
+        try:
+            print(format_timeline(args.path))
+        except Exception as e:
+            print(f"Timeline failed: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    elif args.command == 'replay':
+        try:
+            result = replay_bundle(args.bundle, target=args.target)
+            print(f"Bundle: {result.bundle_path}")
+            print(f"Target: {result.target_path}")
+            print(f"Expected: {result.expected_exception_type}: {result.expected_exception_message}")
+            actual = (
+                f"{result.actual_exception_type}: {result.actual_exception_message}"
+                if result.actual_exception_type
+                else "no exception"
+            )
+            print(f"Actual: {actual}")
+            print(f"Reproduced: {result.reproduced}")
+            print(f"Source changed: {result.source_changed}")
+            for drift in result.source_drifts:
+                print(
+                    f"  {drift.status}: {drift.path} "
+                    f"expected={drift.expected_sha256} actual={drift.actual_sha256}"
+                )
+            if not result.reproduced:
+                sys.exit(1)
+        except Exception as e:
+            print(f"Replay failed: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    elif args.command == 'explain':
+        try:
+            print(format_explain(args.path))
+        except Exception as e:
+            print(f"Explain failed: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    elif args.command == 'report':
+        try:
+            output = write_html_report(args.path, args.output)
+            print(f"Wrote report: {output}")
+        except Exception as e:
+            print(f"Report failed: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    elif args.command == 'minimize':
+        try:
+            from .checker import load_target
+            from .minimize import minimize_bundle
+
+            target = load_target(args.target)
+            result = minimize_bundle(args.bundle, target, output_path=args.output)
+            print(f"Bundle: {result.bundle_path}")
+            print(f"Original schedule choices: {result.original_choices}")
+            print(f"Minimized schedule choices: {result.minimized_choices}")
+            print(f"Attempts: {result.attempts}")
+            print(f"Reproduced: {result.reproduced}")
+            if not result.reproduced:
+                sys.exit(1)
+        except Exception as e:
+            print(f"Minimize failed: {e}", file=sys.stderr)
             sys.exit(1)
             
     else:
